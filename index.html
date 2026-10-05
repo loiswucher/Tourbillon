@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Tourbillon volant 3D</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{margin:0;height:100%;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none}
+  body{background:#05070c radial-gradient(120% 90% at 50% 62%,#17263d 0%,#0b1220 46%,#05070c 100%)}
+  canvas{display:block;width:100%;height:100%}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#9db7e6;font:16px/1.5 system-ui,sans-serif;text-align:center;padding:32px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="err">WebGL n'est pas disponible sur cet appareil.</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+const T = THREE, TAU = Math.PI*2, DEG = Math.PI/180;
+const canvas = document.getElementById('c');
+let renderer;
+try { renderer = new T.WebGLRenderer({canvas, antialias:true, alpha:true, powerPreference:'high-performance'}); }
+catch(e){ document.getElementById('err').style.display='flex'; return; }
+const WALL = !/[?&]hd/.test(location.search);   // wallpaper (light) mode by default; add ?hd for full quality
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, WALL ? 1.5 : 2));
+renderer.outputEncoding = T.sRGBEncoding;
+renderer.toneMapping = T.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+
+const scene = new T.Scene();
+const camera = new T.PerspectiveCamera(26, 1, 10, 6000);
+
+/* ---------- procedural studio environment for metal reflections ---------- */
+(function(){
+  const env = new T.Scene();
+  const geo = new T.SphereGeometry(500, 48, 24);
+  const col = [], pos = geo.attributes.position;
+  const top = new T.Color(0x8fa6d0), mid = new T.Color(0x34456b), bot = new T.Color(0x0d1220);
+  for(let i=0;i<pos.count;i++){
+    const y = pos.getY(i)/500, c = new T.Color();
+    if(y>0) c.copy(mid).lerp(top, Math.pow(y,1.4)); else c.copy(mid).lerp(bot, Math.pow(-y,.7));
+    col.push(c.r,c.g,c.b);
+  }
+  geo.setAttribute('color', new T.Float32BufferAttribute(col,3));
+  env.add(new T.Mesh(geo, new T.MeshBasicMaterial({vertexColors:true, side:T.BackSide})));
+  function box(w,h,x,y,z,int,tint){
+    const m = new T.Mesh(new T.PlaneGeometry(w,h), new T.MeshBasicMaterial({color:new T.Color(tint).multiplyScalar(int), side:T.DoubleSide}));
+    m.position.set(x,y,z); m.lookAt(0,0,0); env.add(m);
+  }
+  box(260,160,-250,260,300,3.5,0xfff1dc);
+  box(200,120, 300,150,200,2,0xcfe0ff);
+  box(320, 60,   0,380,-120,1.1,0xffffff);
+  box(140,260,-380,-40,-120,.8,0xffd9b0);
+  box(180,100, 250,-200,260,3,0xb7ccff);
+  box(120,120,   0,-300,300,2,0xffe7c4);
+  box(700,700,   0,  0,430,.55,0xfff3e0);
+  box(200,200, 150,-100,420,2.2,0xffffff);
+  box(180,180,-170, 130,420,1.8,0xfff0d8);
+  const pm = new T.PMREMGenerator(renderer);
+  scene.environment = pm.fromScene(env, 0.03, 1, 2000).texture;
+  pm.dispose();
+})();
+
+scene.add(new T.AmbientLight(0xffffff, .14));
+const key = new T.DirectionalLight(0xfff0dd, 1.0); key.position.set(-300,420,600); scene.add(key);
+const fill = new T.DirectionalLight(0x9db8ff, .45); fill.position.set(400,-200,300); scene.add(fill);
+const rimL = new T.DirectionalLight(0xffffff, .2); rimL.position.set(0,300,-500); scene.add(rimL);
+
+/* ---------- materials ---------- */
+function grainTex(){
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const g = c.getContext('2d'); g.fillStyle = '#808080'; g.fillRect(0,0,512,512);
+  for(let r=2;r<256;r+=.6){ const v = 128 + (Math.random()-.5)*80; g.strokeStyle = 'rgb('+v+','+v+','+v+')'; g.lineWidth = .9; g.beginPath(); g.arc(256,256,r,0,TAU); g.stroke(); }
+  const t = new T.CanvasTexture(c); t.wrapS = t.wrapT = T.RepeatWrapping;
+  t.repeat.set(1/260,1/260); t.offset.set(.5,.5); t.anisotropy = 8; return t;
+}
+const grain = grainTex();
+const metal = (color, rough, g) => new T.MeshStandardMaterial({color, metalness:1, roughness:rough, bumpMap:g?grain:null, bumpScale:.45});
+const MAT = {
+  gold : metal(0xd9993f,.3,true),  rose : metal(0xc9794f,.3,true),
+  steel: metal(0xdbe1ea,.2,true),   dsteel: metal(0x7b8594,.34,true),
+  goldP: metal(0xf6cf90,.16,false), steelP: metal(0xe6ebf2,.14,false), dsteelP: metal(0x8a93a2,.3,false),
+  gG : new T.MeshStandardMaterial({color:0x5a4528, metalness:.85, roughness:.6, envMapIntensity:.42, bumpMap:grain, bumpScale:.3}),   // train: dark satin bronze
+  gR : new T.MeshStandardMaterial({color:0x5c3a2c, metalness:.85, roughness:.6, envMapIntensity:.42, bumpMap:grain, bumpScale:.3}),
+  gS : new T.MeshStandardMaterial({color:0x474e5a, metalness:.85, roughness:.58, envMapIntensity:.42, bumpMap:grain, bumpScale:.3}),
+  dk : new T.MeshStandardMaterial({color:0x2e343d, metalness:.85, roughness:.6, envMapIntensity:.4}),
+  goldH: new T.MeshStandardMaterial({color:0xffc84a, metalness:1, roughness:.14, emissive:0x7a4a08, emissiveIntensity:1.5}),  // escapement: bright
+  steelH: new T.MeshStandardMaterial({color:0xf2f5fa, metalness:1, roughness:.12, emissive:0x1a1d24, emissiveIntensity:.6}),
+  handG: new T.MeshStandardMaterial({color:0xeaa42c, metalness:1, roughness:.18, emissive:0x6a3d04, emissiveIntensity:1.0}),
+  handR: new T.MeshStandardMaterial({color:0xffe08a, metalness:1, roughness:.1, emissive:0x8a5e12, emissiveIntensity:1.3}),
+  shadow: new T.MeshBasicMaterial({color:0x000000, transparent:true, opacity:.5, depthWrite:false}),
+  lumeH: new T.MeshStandardMaterial({color:0xcfe8c4, roughness:.6, emissive:0x7fc794, emissiveIntensity:.5}),
+  dimNum: new T.MeshStandardMaterial({color:0x6b7380, metalness:.6, roughness:.6, envMapIntensity:.35, side:T.DoubleSide}),
+  dateDisc: new T.MeshStandardMaterial({color:0x080a0e, metalness:.4, roughness:.9, envMapIntensity:.04}),
+  monDim: new T.MeshStandardMaterial({color:0x3b424d, metalness:.5, roughness:.7, envMapIntensity:.2, side:T.DoubleSide}),
+  sky : new T.MeshStandardMaterial({color:0x040a1e, metalness:.2, roughness:.9, envMapIntensity:.05, emissive:0x08205c, emissiveIntensity:.55}),
+  numOn: new T.MeshStandardMaterial({color:0xffffff, metalness:0, roughness:.4, emissive:0xf3e6bf, emissiveIntensity:1.0, side:T.DoubleSide}),
+  rubyD: new T.MeshPhysicalMaterial({color:0x7a0a1a, metalness:0, roughness:.2, clearcoat:.6}),
+  ruby : new T.MeshPhysicalMaterial({color:0xe01230, metalness:0, roughness:.06, clearcoat:1, emissive:0x7a0010, emissiveIntensity:.9}),
+  blue : new T.MeshStandardMaterial({color:0x3f72ff, metalness:.85, roughness:.3, emissive:0x1a3aa0, emissiveIntensity:1.2}),
+  black: new T.MeshStandardMaterial({color:0x06080c, roughness:.55, metalness:.3}),
+  lume : new T.MeshStandardMaterial({color:0xeaf3e2, roughness:.4, emissive:0x9fd8b0, emissiveIntensity:.55})
+};
+
+/* ---------- geometry helpers ---------- */
+function chaikin(pts, it){
+  let p = pts;
+  for(let k=0;k<it;k++){ const q = [];
+    for(let i=0;i<p.length;i++){ const a=p[i], b=p[(i+1)%p.length];
+      q.push(new T.Vector2(a.x*.75+b.x*.25, a.y*.75+b.y*.25), new T.Vector2(a.x*.25+b.x*.75, a.y*.25+b.y*.75)); }
+    p = q; }
+  return p;
+}
+function holePts(ri, ro, aS, aE, w){
+  const hs = r => Math.asin(Math.min(.99, w/2/r));
+  const pol = (r,a) => new T.Vector2(r*Math.cos(a), r*Math.sin(a));
+  const P = [], a0o=aS+hs(ro), a1o=aE-hs(ro), a0i=aS+hs(ri), a1i=aE-hs(ri);
+  let n = Math.max(6, Math.ceil((a1o-a0o)*ro/5));
+  for(let i=0;i<=n;i++) P.push(pol(ro, a0o+(a1o-a0o)*i/n));
+  n = Math.max(6, Math.ceil((a1i-a0i)*ri/5));
+  for(let i=0;i<=n;i++) P.push(pol(ri, a1i-(a1i-a0i)*i/n));
+  return chaikin(P, 2);
+}
+const EXT = (sh, depth, bev) => new T.ExtrudeGeometry(sh, {depth, bevelEnabled:true, bevelThickness:bev, bevelSize:bev*.8, bevelOffset:-bev*.8, bevelSegments:1, curveSegments:8});
+
+function gearMesh(o){
+  const N=o.N, m=o.m, r=m*N/2, rt=r+m, rr=r-1.25*m, p=TAU/N;
+  const sh = new T.Shape(); let first = true;
+  for(let k=0;k<N;k++){
+    const a=k*p, rh=.25*p, tt=.10*p;
+    const q = [[rr,a-rh*1.15],[rr,a-rh],[rt,a-tt],[rt,a+tt],[rr,a+rh],[rr,a+rh*1.15]];
+    for(const [rad,ang] of q){ const x=rad*Math.cos(ang), y=rad*Math.sin(ang); if(first){sh.moveTo(x,y); first=false;} else sh.lineTo(x,y); }
+  }
+  sh.closePath();
+  if(o.spokes){
+    const hr = r*(o.hub||.2), ri = rr - r*(o.rim||.14), w = r*(o.sw||.09), s = o.spokes;
+    for(let i=0;i<s;i++) sh.holes.push(new T.Path(holePts(hr, ri, i*TAU/s, (i+1)*TAU/s, w)));
+  }
+  return new T.Mesh(EXT(sh, o.th, Math.min(.3, o.th*.12)), o.mat);
+}
+function capsuleShape(L, w, slot){
+  const r = w/2, s = new T.Shape();
+  s.moveTo(0,-r); s.lineTo(L,-r); s.absarc(L,0,r,-Math.PI/2,Math.PI/2,false); s.lineTo(0,r); s.absarc(0,0,r,Math.PI/2,Math.PI*1.5,false);
+  if(slot && L > w*2.6){
+    const q = r*.42, a = r*1.15, b = L - r*1.15, h = new T.Path();
+    h.moveTo(a,-q); h.lineTo(b,-q); h.absarc(b,0,q,-Math.PI/2,Math.PI/2,false); h.lineTo(a,q); h.absarc(a,0,q,Math.PI/2,Math.PI*1.5,false);
+    s.holes.push(h);
+  }
+  return s;
+}
+function arm(x1,y1,x2,y2,z,w,th,mat,slot){
+  const L = Math.hypot(x2-x1,y2-y1), m = new T.Mesh(EXT(capsuleShape(L,w,slot), th, .25), mat);
+  m.position.set(x1,y1,z); m.rotation.z = Math.atan2(y2-y1,x2-x1); return m;
+}
+function cyl(r,h,z,mat,seg){ const m = new T.Mesh(new T.CylinderGeometry(r,r,h,seg||24), mat); m.rotation.x = Math.PI/2; m.position.z = z; return m; }
+function jewel(x,y,z,r,dark){
+  const g = new T.Group();
+  g.add(cyl(r*1.9, r*.7, r*.35, dark?MAT.dk:MAT.goldP, 28));
+  const ru = new T.Mesh(new T.SphereGeometry(r,20,14), dark?MAT.rubyD:MAT.ruby); ru.scale.z = .55; ru.position.z = r*.55; g.add(ru);
+  g.position.set(x,y,z); return g;
+}
+function screw(x,y,z,r,ang,mat){
+  const g = new T.Group();
+  g.add(cyl(r, r*.55, r*.27, mat||MAT.steelP, 22));
+  const sl = new T.Mesh(new T.BoxGeometry(r*1.7, r*.3, r*.25), MAT.black); sl.position.z = r*.56; sl.rotation.z = ang; g.add(sl);
+  g.position.set(x,y,z); return g;
+}
+const polarXY = (c,d,a) => [c[0]+d*Math.cos(a), c[1]+d*Math.sin(a)];
+
+function fixedRing(){
+  const op = [], hp = [];
+  for(let i=0;i<260;i++){ const an = i*TAU/260; op.push(new T.Vector2(ROUT*Math.cos(an), ROUT*Math.sin(an))); hp.push(new T.Vector2(RIN*Math.cos(-an), RIN*Math.sin(-an))); }
+  const sh = new T.Shape(op); sh.holes.push(new T.Path(hp));
+  const grp = new T.Group(), th = 6;
+  grp.add(new T.Mesh(EXT(sh, th, .3), MAT.dk));
+  const pitch = Math.PI*MC, H = 2.25*MC, rh = .25*pitch, tt = .10*pitch, Lr = 14;
+  const prof = new T.Shape(); prof.moveTo(-rh,0); prof.lineTo(-tt,H); prof.lineTo(tt,H); prof.lineTo(rh,0); prof.closePath();
+  const tg = new T.ExtrudeGeometry(prof, {depth:Lr, bevelEnabled:false});
+  const inst = new T.InstancedMesh(tg, MAT.dk, NCR), mtx = new T.Matrix4();
+  for(let j=0;j<NCR;j++){
+    const a = j*TAU/NCR, X = new T.Vector3(-Math.sin(a), Math.cos(a), 0), Y = new T.Vector3(0,0,1), Zr = new T.Vector3(Math.cos(a), Math.sin(a), 0);
+    mtx.makeBasis(X, Y, Zr); mtx.setPosition((RC_C-Lr/2)*Math.cos(a), (RC_C-Lr/2)*Math.sin(a), th + .3);
+    inst.setMatrixAt(j, mtx);
+  }
+  grp.add(inst);
+  return grp;
+}
+/* ---------- movement layout (dial plane = XY, +Z toward the viewer) ---------- */
+const A = {}, pos = {};
+const DR = 345;                      // dial radius
+const SHIFT = 66;                    // original cage centre height (design units)
+const RP = 106;                      // half-height of the outer frame (pole distance)
+const RIN = 112, ROUT = 130;                 // fixed crown ring (the track of the frame pinion): hole / outer radius
+const DEK = 187.4;                           // distance E axis -> carrier axis
+const NCAR = 120, NE3 = 20, MCAR = 2*DEK/(NE3+NCAR);   // carrier ring (3rd axis) teeth / its drive gear / module
+const NPN = 26, NCR = 78, MC = 3.1;          // frame pinion / crown teeth / module
+const RC_C = MC*NCR/2, RP_N = MC*NPN/2;      // crown pitch radius, pinion pitch radius
+const ZF = 54.3, ZPL = ZF + 1.25*MC;         // ring face height, crown pitch line height
+const Z0 = ZPL + RP_N;                       // height of the frame's rotation axis
+const LR = 24;                               // distance of the rear rail behind the axis
+pos.C = [0,0];
+pos.B = polarXY(pos.C, 108, 140*DEG);
+pos.T = polarXY(pos.C, 81, -25*DEG);
+pos.R = polarXY(pos.T, 76.5, 0*DEG);
+pos.K = [0,-163];                    // tourbillon: between centre and 6 o'clock
+(function(){
+  const R = pos.R, K = pos.K, dx = K[0]-R[0], dy = K[1]-R[1], d = Math.hypot(dx,dy), ux = dx/d, uy = dy/d, dEK = DEK, dRE = 52;
+  const a = (dRE*dRE-dEK*dEK+d*d)/(2*d), h = Math.sqrt(dRE*dRE-a*a);
+  pos.E = [R[0]+a*ux - h*uy, R[1]+a*uy + h*ux];
+})();
+pos.M = polarXY(pos.C, 30, 105*DEG);
+pos.H = pos.C.slice();
+// moon phase at 7:30 : hour-wheel axis -> A (24 h) -> B (24 h, finger) -> moon star
+const DIR730 = 195*DEG;
+pos.MA = polarXY(pos.C, 86.4, DIR730); pos.MB = polarXY(pos.MA, 115.2, DIR730); pos.MM = polarXY(pos.MB, 42.4, DIR730);   // moon centre at 244 on the 8:30 ray: radius 80 fits between the date disc, the carrier ring and the dial track
+// grande date at 12 o'clock: tens disc (west) and units disc (east); the 24 h wheel W sits under the units disc
+const UD = [143,142], TD = [-143,142];
+pos.W = polarXY(UD, 63, 235*DEG);
+(function(){   // I1: intermediate wheel between the minute-work axis M and W (two-link solution)
+  const M = pos.M, Wp = pos.W, L1 = 52.5, L2 = 100.8, dx = Wp[0]-M[0], dy = Wp[1]-M[1], d = Math.hypot(dx,dy), ux = dx/d, uy = dy/d;
+  const a = (L1*L1-L2*L2+d*d)/(2*d), h = Math.sqrt(L1*L1-a*a);
+  pos.I1 = [M[0]+a*ux-h*uy, M[1]+a*uy+h*ux];
+})();
+pos.K2 = pos.K.slice();
+
+const GEARS = [
+  {id:'Bw', ax:'B', N:96, m:2,   z:0,  th:3, spokes:9, hub:.12, rim:.055, sw:.026, mat:MAT.gG},
+  {id:'Cpn',ax:'C', N:12, m:2,   z:0,  th:3, mat:MAT.gS},
+  {id:'Cw', ax:'C', N:80, m:1.8, z:12, th:3, spokes:8, hub:.14, rim:.055, sw:.028, mat:MAT.gR},
+  {id:'Tp', ax:'T', N:10, m:1.8, z:12, th:3, mat:MAT.gS},
+  {id:'Tw', ax:'T', N:75, m:1.8, z:24, th:3, spokes:7, hub:.15, rim:.055, sw:.03,  mat:MAT.gG},
+  {id:'Rp', ax:'R', N:10, m:1.8, z:24, th:3, mat:MAT.gS},
+  {id:'Rw', ax:'R', N:39, m:2,   z:36, th:3, spokes:5, hub:.2,  rim:.09,  sw:.055, mat:MAT.gR},
+  {id:'E1', ax:'E', N:13, m:2,   z:36, th:3, mat:MAT.gS},
+  {id:'E3', ax:'E', N:NE3, m:MCAR, z:Z0-3, th:4, spokes:3, hub:.3, rim:.2, sw:.16, mat:MAT.steel},
+  {id:'Cr', ax:'K2', N:NCAR, m:MCAR, z:Z0-3, th:6, virtual:true, mat:MAT.steel},
+  {id:'Pc', ax:'C', N:12, m:1.25,z:60, th:3, mat:MAT.gS},
+  {id:'Mw', ax:'M', N:36, m:1.25,z:60, th:3, spokes:4, hub:.2, rim:.1,  sw:.09, mat:MAT.gR},
+  {id:'Mp', ax:'M', N:12, m:1,   z:72, th:3, mat:MAT.gS},
+  {id:'Hw', ax:'H', N:48, m:1,   z:72, th:3, spokes:8, hub:.5, rim:.09, sw:.06, mat:MAT.gG},
+  // 24-hour train for the big date: minute-work M (3 h/turn) x 6 / x 4:3 -> W (24 h/turn)
+  {id:'Mq',  ax:'M',  N:10, m:1.5, z:84, th:3, mat:MAT.gS},
+  {id:'I1a', ax:'I1', N:60, m:1.5, z:84, th:3, spokes:9, hub:.14, rim:.06, sw:.03, mat:MAT.gR},
+  {id:'I1b', ax:'I1', N:36, m:2.4, z:92, th:3, spokes:6, hub:.2,  rim:.09, sw:.06, mat:MAT.gS},
+  {id:'W24', ax:'W',  N:48, m:2.4, z:92, th:3, spokes:8, hub:.12, rim:.055, sw:.034, mat:MAT.gG},
+  // moon train (below the carrier ring): hour wheel x2 -> 24 h wheels A and B
+  {id:'Hw2', ax:'H',  N:24, m:2.4, z:40, th:3, mat:MAT.gS},
+  {id:'MAw', ax:'MA', N:48, m:2.4, z:40, th:3, spokes:8, hub:.12, rim:.055, sw:.034, mat:MAT.gR},
+  {id:'MBw', ax:'MB', N:48, m:2.4, z:40, th:3, spokes:8, hub:.12, rim:.055, sw:.034, mat:MAT.gG}
+];
+const GI = {}; GEARS.forEach(g => GI[g.id] = g);
+const MESH = [['Rw','E1'],['E3','Cr'],['Rp','Tw'],['Tp','Cw'],['Cpn','Bw'],['Pc','Mw'],['Mp','Hw'],['Mq','I1a'],['I1b','W24'],['Hw2','MAw'],['MAw','MBw']];
+['K','K2','E','R','T','C','B','M','H','I1','W','MA','MB'].forEach(id => A[id] = {id, x:pos[id][0], y:pos[id][1], k:0, phi0:0});
+A.R.k = 1;                                  // the R wheel turns once a minute (7.5-min third wheel x 7.5)
+MESH.forEach(([pa,ch]) => {
+  const g1 = GI[pa], g2 = GI[ch], a1 = A[g1.ax], a2 = A[g2.ax];
+  const dist = Math.hypot(a2.x-a1.x, a2.y-a1.y), want = (g1.m*g1.N + g2.m*g2.N)/2;
+  if(Math.abs(dist-want) > .01) console.warn('mesh distance mismatch', pa, ch, dist, want);
+  const al = Math.atan2(a2.y-a1.y, a2.x-a1.x);
+  a2.k = -(g1.N/g2.N) * a1.k;
+  a2.phi0 = (g1.N*(al-a1.phi0) + g2.N*(al+Math.PI) - Math.PI)/g2.N;
+});
+window.__A = A;
+
+const world = new T.Group();
+const objs = {};
+GEARS.forEach(g => {
+  if(g.virtual) return;
+  const grp = new T.Group(), mesh = g.ring ? ringMesh(g) : gearMesh(g); mesh.position.z = g.z; grp.add(mesh);
+  if(g.id === 'Bw'){
+    const pts = [], r0 = 16, r1 = 80, turns = 9;
+    for(let i=0;i<=360;i++){ const t = i/360, rad = r0 + t*(r1-r0), a = t*turns*TAU; pts.push(new T.Vector3(rad*Math.cos(a), rad*Math.sin(a), 0)); }
+    const sp = new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(pts), 500, .38, 5, false), MAT.blue); sp.position.z = 1.5; grp.add(sp);
+  }
+  grp.position.set(A[g.ax].x, A[g.ax].y, 0); world.add(grp);
+  objs[g.id] = grp;
+});
+
+// arbors, bridges, jewels
+['B','C','T','R','E','M','I1','W','MA','MB'].forEach(id => {
+  const gs = GEARS.filter(g => g.ax===id), z0 = Math.min(...gs.map(g=>g.z)), z1 = Math.max(...gs.map(g=>g.z+g.th));
+  const ar = cyl(1.6, z1 - z0 + 12, (z0+z1)/2 - 2, MAT.dsteelP, 14); ar.position.x = A[id].x; ar.position.y = A[id].y; world.add(ar);
+});
+const backZ = -10;
+[['B','C'],['C','T'],['T','R'],['R','E'],['C','M']].forEach(([p,q],i) => {
+  world.add(arm(A[p].x,A[p].y,A[q].x,A[q].y,backZ,13,2.6,MAT.dk,true));
+});
+// the plate stops on the fixed ring: the E arm ends on the plate ring that carries it (nothing reaches the tourbillon centre)
+const PLATE_R = 124;
+{
+  const dx = A.E.x-pos.K[0], dy = A.E.y-pos.K[1], d = Math.hypot(dx,dy);
+  world.add(arm(A.E.x, A.E.y, pos.K[0]+dx/d*PLATE_R, pos.K[1]+dy/d*PLATE_R, backZ, 13, 2.6, MAT.dk, true));
+}
+['B','C','T','R','E','M'].forEach(id => { const j = jewel(A[id].x, A[id].y, backZ, 2.6, true); j.rotation.x = Math.PI; world.add(j); });
+world.add(arm(A.B.x,A.B.y,A.C.x,A.C.y,7.2,12,2.6,MAT.dk,true));
+world.add(arm(A.T.x,A.T.y,A.R.x,A.R.y,31,11,2.6,MAT.dk,true));
+world.add(arm(A.R.x,A.R.y,A.E.x,A.E.y,43,12,2.6,MAT.dk,true));
+[[A.B,7.2],[A.C,7.2],[A.T,31],[A.R,31],[A.R,43],[A.E,43]].forEach(([a,z]) => world.add(jewel(a.x,a.y,z+2.6,2.6,true)));
+world.add(screw((A.B.x+A.C.x)/2,(A.B.y+A.C.y)/2,10,4,.7,MAT.dk));
+world.add(screw((A.T.x+A.R.x)/2,(A.T.y+A.R.y)/2,33.6,3.8,1.4,MAT.dk));
+world.add(screw((A.R.x+A.E.x)/2,(A.R.y+A.E.y)/2,45.6,3.8,2.1,MAT.dk));
+(function(){
+  const ex = pos.M[0] + 38*Math.cos(105*DEG+0.9), ey = pos.M[1] + 38*Math.sin(105*DEG+0.9);
+  world.add(arm(pos.M[0],pos.M[1],ex,ey,76.5,9,2.2,MAT.dk,false));
+  world.add(jewel(pos.M[0],pos.M[1],78.5,2.2,true)); world.add(screw(ex,ey,78.5,3,.6,MAT.dk));
+})();
+
+/* ---------- bevel gear helper (teeth shrink toward the apex) ---------- */
+function bevelMesh(N, m, face, delta, mat, spokes){
+  const r = m*N/2, h = r/Math.tan(delta);
+  const o = {N, m, th:face, mat}; if(spokes){ o.spokes = spokes; o.hub = .26; o.rim = .16; o.sw = .13; }
+  const mesh = gearMesh(o), g = mesh.geometry, p = g.attributes.position;
+  for(let i=0;i<p.count;i++){ const s = Math.max(.03, 1 - p.getZ(i)/h); p.setX(i, p.getX(i)*s); p.setY(i, p.getY(i)*s); }
+  p.needsUpdate = true; g.computeVertexNormals();
+  return mesh;
+}
+function base(parent, p, X, Y, Z){
+  const o = new T.Group();
+  o.quaternion.setFromRotationMatrix(new T.Matrix4().makeBasis(new T.Vector3(...X), new T.Vector3(...Y), new T.Vector3(...Z)));
+  o.position.set(...p); parent.add(o); return o;
+}
+const BY = [[0,0,1],[1,0,0],[0,1,0]];     // spur gear whose axis is +Y (gear angle = angle from +Z toward +X)
+
+/* ---------- TRIAXIAL tourbillon ----------
+   Kw (60 s) -> Pz (3:1) -> miter pair -> outer frame turning about the vertical axis (20 s)
+   fixed wheel Fs + planet Ps (1:1) -> bevel Br/Bc (1:3) -> inner cage turns 60 s inside the frame            */
+const NFs = 12, NPs = 12, NBr = 8, NBc = 12;
+const HBR = NBr/Math.tan(Math.atan(NBr/NBc)), HBC = NBc/Math.tan(Math.atan(NBc/NBr));
+const tourG = new T.Group(); tourG.position.set(pos.K[0], pos.K[1], Z0); world.add(tourG);
+const F = new T.Group(); tourG.add(F);
+{ const fr = fixedRing(); fr.position.set(pos.K[0], pos.K[1], 48); world.add(fr);
+  // plate ring (skeleton band) under the fixed ring, linked to it by three pillars
+  { const op = [], ip = [];
+    for(let i=0;i<260;i++){ const an = i*TAU/260; op.push(new T.Vector2((PLATE_R+7)*Math.cos(an), (PLATE_R+7)*Math.sin(an))); ip.push(new T.Vector2((PLATE_R-7)*Math.cos(-an), (PLATE_R-7)*Math.sin(-an))); }
+    const psh = new T.Shape(op); psh.holes.push(new T.Path(ip));
+    for(let i=0;i<12;i++) psh.holes.push(new T.Path(holePts(PLATE_R-4.6, PLATE_R+4.6, i*TAU/12, (i+1)*TAU/12, 7)));
+    const pr = new T.Mesh(EXT(psh, 2.6, .25), MAT.dk); pr.position.set(pos.K[0], pos.K[1], backZ); world.add(pr); }
+  [200, 270, 340].forEach(d => { const a = d*DEG, px = pos.K[0] + PLATE_R*Math.cos(a), py = pos.K[1] + PLATE_R*Math.sin(a);
+    const pst = cyl(3.4, 58, 19, MAT.dk, 14); pst.position.x = px; pst.position.y = py; world.add(pst);
+    const sc = screw(px, py, backZ-.4, 4.4, a, MAT.dk); sc.rotation.x = Math.PI; world.add(sc); } ); }                       // outer frame (rotates about Y)
+const innerSpin = new T.Group(); F.add(innerSpin);           // inner cage (rotates about the frame's Z')
+const cageG = new T.Group(); cageG.position.z = -SHIFT; innerSpin.add(cageG);
+const fShift = new T.Group(); fShift.position.z = -SHIFT; F.add(fShift);
+
+// --- inner cage (same as before, centred on the frame) ---
+const RC = 96;
+const NF = 144, NP = 12, MF = .615;
+const OFF = MF*(NF+NP)/2;
+const PTR = Math.PI/2;
+const BETA = PTR + 120*DEG;
+const BcL = [OFF*Math.cos(BETA), OFF*Math.sin(BETA)];
+const ANGE = BETA + 75*DEG;
+const EcL = [OFF*Math.cos(ANGE), OFF*Math.sin(ANGE)];
+const ring = new T.Mesh(new T.TorusGeometry(RC, 3.4, 14, 120), MAT.steelH); ring.position.z = 62; cageG.add(ring);
+const ring2 = new T.Mesh(new T.TorusGeometry(RC, 1.1, 8, 120), MAT.dsteel); ring2.position.z = 65.8; cageG.add(ring2);
+for(let i=0;i<3;i++){
+  const a = PTR + i*TAU/3, x = RC*Math.cos(a), y = RC*Math.sin(a);
+  const post = cyl(3.6, 24, 65, MAT.steelH, 18); post.position.x = x; post.position.y = y; cageG.add(post);
+  cageG.add(arm(0,0,RC*Math.cos(a),RC*Math.sin(a),76,i===0?13:11,4,MAT.steelH,true));
+  cageG.add(screw(x,y,80,4.6,a,MAT.goldP));
+}
+cageG.add(cyl(11, 5, 80, MAT.goldP, 32)); cageG.add(cyl(3.4, 4, 83, MAT.ruby, 20));
+cageG.add(cyl(1.6, 30, 66, MAT.dsteelP, 12));
+
+const balG = new T.Group(); balG.position.set(BcL[0], BcL[1], 0); cageG.add(balG);
+{
+  const bz = 66, BR = 38;
+  const wr = new T.Mesh(new T.TorusGeometry(BR, 2.7, 10, 90), MAT.goldH); wr.position.z = bz; balG.add(wr);
+  for(let i=0;i<2;i++){ const bar = new T.Mesh(new T.BoxGeometry(BR*2, 3.2, 1.8), MAT.goldH); bar.position.z = bz; bar.rotation.z = i*Math.PI/2 + .3; balG.add(bar); }
+  for(let i=0;i<12;i++){ const a = i*TAU/12, sc = new T.Mesh(new T.SphereGeometry(2.5,14,10), MAT.goldH); sc.position.set(BR*Math.cos(a), BR*Math.sin(a), bz); balG.add(sc); }
+  const pts = [], turns = 9.5;
+  for(let i=0;i<=420;i++){ const t = i/420, rad = 4 + t*17, a = t*turns*TAU; pts.push(new T.Vector3(rad*Math.cos(a), rad*Math.sin(a), 0)); }
+  const hs = new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(pts), 600, .26, 4, false), MAT.blue); hs.position.z = 70.5; balG.add(hs);
+  balG.add(cyl(7, 1.6, 60.8, MAT.steelP, 28));
+  const imp = new T.Mesh(new T.SphereGeometry(1.9,12,10), MAT.ruby); imp.position.set(5.2,0,61.6); balG.add(imp);
+  balG.add(cyl(2.8, 4, bz, MAT.goldP, 16)); balG.add(cyl(1.5, 22, 66, MAT.dsteelP, 10));
+}
+// fixed seconds wheel is fixed to the FRAME; the escape pinion rolls around it
+const fixedW = gearMesh({N:NF, m:MF, th:2, spokes:6, hub:.2, rim:.1, sw:.05, mat:MAT.steelH}); fixedW.position.z = 56; fShift.add(fixedW);
+const escG = new T.Group(); escG.position.set(EcL[0], EcL[1], 0); cageG.add(escG);
+const RE = 13.5;
+{
+  const pin = gearMesh({N:NP, m:MF, th:2, mat:MAT.steelP}); pin.position.z = 56; escG.add(pin);
+  const N = 15, sh = new T.Shape(); let f = true;
+  for(let k=0;k<N;k++){ const a = k*TAU/N; [[RE*.6,a],[RE*.6,a+.05],[RE,a+.34],[RE*.6,a+.4]].forEach(([r,an]) => { const x=r*Math.cos(an), y=r*Math.sin(an); if(f){sh.moveTo(x,y); f=false;} else sh.lineTo(x,y); }); }
+  sh.closePath();
+  for(let i=0;i<3;i++) sh.holes.push(new T.Path(holePts(3.4, 6.8, i*TAU/3, (i+1)*TAU/3, 2.4)));
+  const ew = new T.Mesh(EXT(sh, 2, .22), MAT.steelH); ew.position.z = 60; escG.add(ew);
+  escG.add(cyl(1.1, 9, 58.5, MAT.dsteelP, 10));
+}
+const forkG = new T.Group(); cageG.add(forkG);
+{
+  const dx = BcL[0]-EcL[0], dy = BcL[1]-EcL[1], lb = Math.hypot(dx,dy), ux = dx/lb, uy = dy/lb, dirF = Math.atan2(uy,ux);
+  const Fp = [EcL[0]+21*ux, EcL[1]+21*uy];
+  forkG.position.set(Fp[0], Fp[1], 0);
+  [-1,1].forEach(sg => {
+    const ang = dirF + sg*34*DEG, sx = EcL[0] + (RE+.6)*Math.cos(ang) - Fp[0], sy = EcL[1] + (RE+.6)*Math.sin(ang) - Fp[1];
+    forkG.add(arm(0,0,sx,sy,60,3.2,2,MAT.goldH,false));
+    const st = new T.Mesh(new T.BoxGeometry(4.2,2.4,2), MAT.ruby); st.position.set(sx,sy,61); st.rotation.z = ang + Math.PI/2; forkG.add(st);
+  });
+  const hl = lb - 21 - 7.5;
+  forkG.add(arm(0,0,ux*hl,uy*hl,60,3.2,2,MAT.goldH,false));
+  forkG.add(arm(0,0,-ux*9,-uy*9,60,3.6,2,MAT.goldH,false));
+  forkG.add(cyl(2, 4, 61, MAT.goldP, 14));
+}
+cageG.add(jewel(BcL[0], BcL[1], 80, 3.2));
+
+// --- inner axle + bevel Bc (rear of the cage) ---
+{
+  const ax = cyl(2.2, 12, -18, MAT.dsteelP, 14); innerSpin.add(ax);
+  const bc = base(innerSpin, [0,0,-LR+HBC], [1,0,0],[0,-1,0],[0,0,-1]);
+  bc.add(bevelMesh(NBc, 2, 5, Math.atan(NBc/NBr), MAT.steelH, 3));
+}
+// --- outer frame: C-shaped, axle along Y through the cage centre, rear rail at z'=-LR ---
+const mkCylY = (r,h,x,y,z,mat) => { const m = new T.Mesh(new T.CylinderGeometry(r,r,h,18), mat); m.position.set(x,y,z); return m; };
+{
+  F.add(mkCylY(3.6, 2*140+40, 0, 4, 0, MAT.steelP));
+  const topArm = new T.Mesh(new T.BoxGeometry(14, 9, LR+8), MAT.steelH); topArm.position.set(0, RP, -LR/2); F.add(topArm);
+  const botArm = new T.Mesh(new T.BoxGeometry(14, 9, LR+8), MAT.steelH); botArm.position.set(0, -RP, -LR/2); F.add(botArm);
+  [topArm, botArm].forEach(a => { const e = new T.Mesh(new T.BoxGeometry(14.2, 1.2, LR+8.2), MAT.goldP); e.position.copy(a.position); e.position.y += 4.2; F.add(e); });
+}
+const rail = new T.Group(); rail.position.set(0,0,-LR); F.add(rail);
+{
+  const r = new T.Mesh(new T.CylinderGeometry(3.2,3.2,250,16), MAT.dsteelP); r.position.y = 12; rail.add(r);
+  const ps = base(rail, [0,128,0], ...BY); ps.add(gearMesh({N:NPs, m:2, th:4, spokes:4, hub:.3, rim:.22, sw:.16, mat:MAT.steelH}));
+  const br = base(rail, [0,HBR,0], [1,0,0],[0,0,1],[0,-1,0]);
+  br.add(bevelMesh(NBr, 2, 5, Math.atan(NBr/NBc), MAT.steelH));
+}
+// --- frame pinion on the lower end of the axle: rolls on the crown teeth of the seconds ring ---
+{
+  const pn = base(F, [0,-126,0], ...BY); pn.add(gearMesh({N:NPN, m:MC, th:8, spokes:5, hub:.3, rim:.16, sw:.09, mat:MAT.steelH}));
+}
+// --- carrier (3rd axis): a big toothed ring around everything, driven by E3, holding the frame's two bearings ---
+function carrierMesh(){
+  const N = NCAR, m = MCAR, r = m*N/2, rt = r + m, rr = r - 1.25*m, p = TAU/N, pts = [];
+  for(let k=0;k<N;k++){
+    const a = k*p, rh = .29*p, tt = .13*p;
+    [[rr,a-rh*1.15],[rr,a-rh],[rt,a-tt],[rt,a+tt],[rr,a+rh],[rr,a+rh*1.15]].forEach(([rad,ang]) => pts.push(new T.Vector2(rad*Math.cos(ang), rad*Math.sin(ang))));
+  }
+  const sh = new T.Shape(pts), hp = [];
+  for(let i=0;i<220;i++){ const an = -i*TAU/220; hp.push(new T.Vector2((rr-10)*Math.cos(an), (rr-10)*Math.sin(an))); }
+  sh.holes.push(new T.Path(hp));
+  return new T.Mesh(EXT(sh, 6, .3), MAT.steelH);
+}
+const RCAR_TIP = MCAR*NCAR/2 + MCAR;
+{
+  const cm = carrierMesh(); cm.position.z = -3; tourG.add(cm);
+  const fs = base(tourG, [0,128,0], ...BY); fs.add(gearMesh({N:NFs, m:2, th:4, spokes:4, hub:.3, rim:.22, sw:.16, mat:MAT.steelH}));
+  tourG.add(mkCylY(3, 4, 0, 136, 0, MAT.dsteelP));
+  const sT = new T.Mesh(new T.BoxGeometry(14, 24, 10), MAT.steelH); sT.position.set(0, 147.5, 0); tourG.add(sT);
+  const sB = new T.Mesh(new T.BoxGeometry(14, 28, 10), MAT.steelH); sB.position.set(0, -146.5, 0); tourG.add(sB);
+  tourG.add(jewel(0, 144, 5.2, 3.8)); tourG.add(jewel(0, -142, 5.2, 3.8));
+  tourG.add(screw(0, 154, 5.2, 4.2, .9, MAT.goldP)); tourG.add(screw(0, -153, 5.2, 4.2, 1.5, MAT.goldP));
+}
+// guide posts that hold the carrier ring at the plate
+[215, 305].forEach(d => {
+  const a = d*DEG, rr = RCAR_TIP + 7, px = pos.K[0] + rr*Math.cos(a), py = pos.K[1] + rr*Math.sin(a);
+  const post = cyl(4.5, Z0-40, (40+Z0)/2, MAT.dsteelP, 16); post.position.x = px; post.position.y = py; world.add(post);
+  const fl = cyl(8.5, 3, Z0, MAT.goldP, 28); fl.position.x = px; fl.position.y = py; world.add(fl);
+  world.add(screw(px, py, Z0+1.5, 4, a, MAT.steelP));
+});
+
+/* ---------- GRANDE DATE à 12 h ----------
+   chain: minute-work M -> Mq/I1a (x6) -> I1b/W24 (x4/3) = 24 h wheel W. At midnight its pin pushes the 10-tooth star of the UNITS disc
+   (a jumper snaps it to the next detent); a pin on the units disc pushes one of the 4 lugs of the TENS disc (once every 10 days). */
+function strokeGeom(strokes, w, h, lw){
+  const P = [], I = []; let base = 0;
+  const quad = (a,b,c,d) => { P.push(...a,...b,...c,...d); I.push(base,base+1,base+2, base,base+2,base+3); base += 4; };
+  const disc = (cx,cy,r,n) => { P.push(cx,cy,0); for(let i=0;i<n;i++){ const an = i*TAU/n; P.push(cx+r*Math.cos(an), cy+r*Math.sin(an), 0); } for(let i=0;i<n;i++) I.push(base, base+1+i, base+1+((i+1)%n)); base += n+1; };
+  strokes.forEach(st => {
+    const pts = st.pts.map(p => [(p[0]-.5)*w, (p[1]-.5)*h]), n = pts.length + (st.closed ? 1 : 0) - 1;
+    for(let i=0;i<n;i++){
+      const a = pts[i], b = pts[(i+1)%pts.length], dx = b[0]-a[0], dy = b[1]-a[1], l = Math.hypot(dx,dy) || 1, nx = -dy/l*lw/2, ny = dx/l*lw/2;
+      quad([a[0]+nx,a[1]+ny,0],[b[0]+nx,b[1]+ny,0],[b[0]-nx,b[1]-ny,0],[a[0]-nx,a[1]-ny,0]);
+      disc(b[0], b[1], lw/2, 8);
+    }
+    disc(pts[0][0], pts[0][1], lw/2, 8);
+  });
+  const g = new T.BufferGeometry(); g.setAttribute('position', new T.Float32BufferAttribute(P,3)); g.setIndex(I); g.computeVertexNormals(); return g;
+}
+const ell = (cx,cy,rx,ry,n) => { const a = []; for(let i=0;i<n;i++){ const t = i*TAU/n; a.push([cx+rx*Math.cos(t), cy+ry*Math.sin(t)]); } return a; };
+const six = [[.85,.95],[.55,1],[.25,.82],[.1,.5],[.12,.25],[.3,.04],[.6,0],[.85,.12],[.92,.32],[.8,.5],[.55,.58],[.3,.52],[.12,.34]];
+const DIGITS = {
+  '0': [{closed:true, pts:ell(.5,.5,.42,.5,24)}],
+  '1': [{pts:[[.2,.76],[.52,1],[.52,0]]}],
+  '2': [{pts:[[.08,.8],[.22,.96],[.5,1],[.78,.94],[.9,.74],[.8,.54],[.5,.34],[.08,0],[.95,0]]}],
+  '3': [{pts:[[.1,.92],[.48,1],[.84,.9],[.88,.7],[.52,.54],[.88,.4],[.92,.16],[.52,0],[.08,.1]]}],
+  '4': [{pts:[[.72,0],[.72,1],[.04,.3],[.98,.3]]}],
+  '5': [{pts:[[.9,1],[.2,1],[.12,.55],[.5,.66],[.84,.52],[.92,.24],[.55,0],[.08,.1]]}],
+  '6': [{pts:six}],
+  '7': [{pts:[[.05,1],[.95,1],[.38,0]]}],
+  '8': [{closed:true, pts:ell(.5,.745,.3,.25,18)},{closed:true, pts:ell(.5,.27,.38,.27,20)}],
+  '9': [{pts:six.map(p => [1-p[0], 1-p[1]])}]
+};
+const digitMesh = (ch, mat) => new T.Mesh(strokeGeom(DIGITS[ch], 28, 44, 4.6), mat);
+
+const Yc = UD[1], DZ = 106, DOUT = 142, DIN = 90, DNUM = 118;   // GRAND discs: they reach the dial edge and the centre height
+const unitsDisc = new T.Group(), tensDisc = new T.Group();
+unitsDisc.position.set(UD[0], UD[1], 0); tensDisc.position.set(TD[0], TD[1], 0); world.add(unitsDisc, tensDisc);
+const unitsDigits = [], tensDigits = [];
+const circ = (r, n, rev) => { const a = []; for(let i=0;i<n;i++){ const an = (rev ? -1 : 1)*i*TAU/n; a.push(new T.Vector2(r*Math.cos(an), r*Math.sin(an))); } return a; };
+function dateDisc(grp, n, upOffset, mat, store){
+  const sh = new T.Shape(circ(DOUT,200,false)); sh.holes.push(new T.Path(circ(DIN,200,true)));
+  const ring = new T.Mesh(EXT(sh, 3, .4), mat); ring.position.z = DZ; grp.add(ring);
+  const sh2 = new T.Shape(circ(55,160,false)); sh2.holes.push(new T.Path(circ(50.5,160,true)));
+  const ring2 = new T.Mesh(EXT(sh2, 2.4, .3), mat); ring2.position.z = DZ+.3; grp.add(ring2);
+  for(let k=0;k<6;k++){ const a = k*TAU/6 + .25; grp.add(arm(0,0,DIN*Math.cos(a),DIN*Math.sin(a),DZ,5,2.4,mat,false)); }
+  grp.add(cyl(14, 3, DZ+1.5, mat, 36));
+  for(let d=0; d<n; d++){
+    const ch = String(d); if(!DIGITS[ch] || (n === 4 && d === 0)){ store.push(null); continue; }
+    const th = (n === 10 ? Math.PI + d*36*DEG : d*90*DEG);
+    const m = digitMesh(ch, MAT.dimNum); m.position.set(DNUM*Math.cos(th), DNUM*Math.sin(th), DZ+3.9); m.rotation.z = th + upOffset; grp.add(m); store.push(m);
+  }
+}
+dateDisc(unitsDisc, 10, -Math.PI, MAT.dateDisc, unitsDigits);     // numerals read upright at the WEST of the units disc
+dateDisc(tensDisc, 4, 0, MAT.dateDisc, tensDigits);                // ... and at the EAST of the tens disc
+{
+  const star = gearMesh({N:10, m:3, th:2.4, mat:MAT.gR}); star.position.z = DZ-3.4; unitsDisc.add(star);
+  const finger = cyl(4, 8, DZ+4, MAT.goldH, 16); finger.position.set(141*Math.cos(162*DEG), 141*Math.sin(162*DEG), DZ+4); unitsDisc.add(finger);
+  for(let k=0;k<4;k++){ const a = k*90*DEG, lug = new T.Mesh(new T.BoxGeometry(10,5,4), MAT.gR); lug.position.set(142*Math.cos(a), 142*Math.sin(a), DZ+4); lug.rotation.z = a; tensDisc.add(lug); }
+  const star4 = new T.Shape(); for(let k=0;k<4;k++){ const a = k*90*DEG; [[7,a-.35],[17,a-.08],[17,a+.08],[7,a+.35]].forEach(([r,an],i) => { const x = r*Math.cos(an), y = r*Math.sin(an); if(!k && !i) star4.moveTo(x,y); else star4.lineTo(x,y); }); }
+  star4.closePath(); const t4 = new T.Mesh(EXT(star4, 2.4, .2), MAT.gR); t4.position.z = DZ-3.4; tensDisc.add(t4);
+}
+// pin of the 24 h wheel: at the contact point of the units star exactly at midnight
+{
+  const angWU = Math.atan2(UD[1]-pos.W[1], UD[0]-pos.W[0]);
+  const pin = cyl(2.8, 12, 98.5, MAT.goldH, 14), RPIN = 52.5, loc = angWU - A.W.phi0;
+  pin.position.set(RPIN*Math.cos(loc), RPIN*Math.sin(loc), 98.5); objs['W24'].add(pin);
+  world.add(arm(pos.M[0],pos.M[1],pos.I1[0],pos.I1[1],88.4,10,2.4,MAT.dk,true));
+  world.add(arm(pos.I1[0],pos.I1[1],pos.W[0],pos.W[1],96.8,10,2.4,MAT.dk,true));
+  [pos.I1,pos.W].forEach(p => world.add(jewel(p[0],p[1],99.2,2.4,true)));
+  const jr = [UD[0]+19*Math.cos(-60*DEG), UD[1]+19*Math.sin(-60*DEG)], jp = [UD[0]+52*Math.cos(-25*DEG), UD[1]+52*Math.sin(-25*DEG)];
+  world.add(arm(jp[0],jp[1],jr[0],jr[1],DZ-3.4,4,2.4,MAT.steelH,false));
+  world.add(jewel(jp[0],jp[1],DZ-.6,3));
+  const roller = cyl(2.6, 4, DZ-2, MAT.goldH, 14); roller.position.set(jr[0], jr[1], DZ-2); world.add(roller);
+}
+// window bezels (bright) + a bridge joining them
+{
+  const rr = (w,h) => { const s = new T.Shape(); s.moveTo(-w/2,-h/2); s.lineTo(w/2,-h/2); s.lineTo(w/2,h/2); s.lineTo(-w/2,h/2); s.closePath(); return s; };
+  [-25,25].forEach(x => {
+    const sh = rr(44,74), hole = new T.Path(); hole.moveTo(-17,-29); hole.lineTo(-17,29); hole.lineTo(17,29); hole.lineTo(17,-29); hole.closePath(); sh.holes.push(hole);
+    const bz = new T.Mesh(EXT(sh, 2.6, .4), MAT.steelH); bz.position.set(x, Yc, 112); world.add(bz);
+  });
+  const br = new T.Mesh(new T.BoxGeometry(8, 10, 2.6), MAT.steelH); br.position.set(0, Yc+34, 113); world.add(br);
+  world.add(screw(0, Yc+34, 114.2, 3.4, .6, MAT.goldP));
+}
+/* ---------- MOIS: small disc in the free gap above the date windows (between the two big discs, under the 12 o'clock index) ----------
+   a cam on the TENS disc touches a lever when the tens go 3 -> 0 (every month end); the lever pushes the 12-tooth star of the month disc. */
+const MD = [0,272], MOUT = 48, MINR = 26, MLAB = 38;
+const L_ = {
+ A:[{pts:[[0,0],[.5,1],[1,0]]},{pts:[[.2,.38],[.8,.38]]}],
+ C:[{pts:[[.95,.82],[.7,1],[.3,1],[.05,.75],[.05,.25],[.3,0],[.7,0],[.95,.18]]}],
+ D:[{closed:true,pts:[[0,0],[0,1],[.5,1],[.9,.78],[.95,.5],[.9,.22],[.5,0]]}],
+ E:[{pts:[[.95,1],[0,1],[0,0],[.95,0]]},{pts:[[0,.5],[.7,.5]]}],
+ F:[{pts:[[.95,1],[0,1],[0,0]]},{pts:[[0,.5],[.7,.5]]}],
+ I:[{pts:[[.5,0],[.5,1]]}],
+ J:[{pts:[[.9,1],[.9,.25],[.7,.02],[.3,.02],[.05,.25]]}],
+ L:[{pts:[[0,1],[0,0],[.95,0]]}],
+ M:[{pts:[[0,0],[0,1],[.5,.4],[1,1],[1,0]]}],
+ N:[{pts:[[0,0],[0,1],[1,0],[1,1]]}],
+ O:[{closed:true,pts:ell(.5,.5,.5,.5,20)}],
+ P:[{pts:[[0,0],[0,1],[.7,1],[.95,.8],[.95,.62],[.7,.45],[0,.45]]}],
+ R:[{pts:[[0,0],[0,1],[.7,1],[.95,.8],[.95,.62],[.7,.45],[0,.45]]},{pts:[[.45,.45],[1,0]]}],
+ S:[{pts:[[.95,.85],[.7,1],[.3,1],[.05,.8],[.1,.6],[.5,.5],[.9,.4],[.95,.2],[.7,0],[.3,0],[.05,.15]]}],
+ T:[{pts:[[0,1],[1,1]]},{pts:[[.5,1],[.5,0]]}],
+ U:[{pts:[[0,1],[0,.25],[.2,.03],[.8,.03],[1,.25],[1,1]]}],
+ V:[{pts:[[0,1],[.5,0],[1,1]]}]
+};
+function strokeAbs(strokes, lw){
+  const P = [], I = []; let base = 0;
+  const quad = (a,b,c,d) => { P.push(...a,...b,...c,...d); I.push(base,base+1,base+2, base,base+2,base+3); base += 4; };
+  const disc = (cx,cy,r,n) => { P.push(cx,cy,0); for(let i=0;i<n;i++){ const an = i*TAU/n; P.push(cx+r*Math.cos(an), cy+r*Math.sin(an), 0); } for(let i=0;i<n;i++) I.push(base, base+1+i, base+1+((i+1)%n)); base += n+1; };
+  strokes.forEach(st => {
+    const pts = st.pts, n = pts.length + (st.closed ? 1 : 0) - 1;
+    for(let i=0;i<n;i++){
+      const a = pts[i], b = pts[(i+1)%pts.length], dx = b[0]-a[0], dy = b[1]-a[1], l = Math.hypot(dx,dy) || 1, nx = -dy/l*lw/2, ny = dx/l*lw/2;
+      quad([a[0]+nx,a[1]+ny,0],[b[0]+nx,b[1]+ny,0],[b[0]-nx,b[1]-ny,0],[a[0]-nx,a[1]-ny,0]); disc(b[0], b[1], lw/2, 6);
+    }
+    disc(pts[0][0], pts[0][1], lw/2, 6);
+  });
+  const g = new T.BufferGeometry(); g.setAttribute('position', new T.Float32BufferAttribute(P,3)); g.setIndex(I); g.computeVertexNormals(); return g;
+}
+function labelMesh(word, mat){
+  const w = 5.2, h = 10, gap = 1.2, strokes = [];
+  [...word].forEach((ch,i) => { const ox = (i-1)*(w+gap); L_[ch].forEach(st => strokes.push({closed:st.closed, pts:st.pts.map(p => [ox+(p[0]-.5)*w, (p[1]-.5)*h])})); });
+  return new T.Mesh(strokeAbs(strokes, 1.3), mat);
+}
+const MONTHS = ['JAN','FEV','MAR','AVR','MAI','JUN','JUL','AOU','SEP','OCT','NOV','DEC'];
+const monthDisc = new T.Group(); monthDisc.position.set(MD[0], MD[1], 0); world.add(monthDisc);
+const monthLabels = [];
+{
+  const sh = new T.Shape(circ(MOUT,140,false)); sh.holes.push(new T.Path(circ(MINR,140,true)));
+  const ring = new T.Mesh(EXT(sh, 3, .35), MAT.dateDisc); ring.position.z = DZ; monthDisc.add(ring);
+  for(let k=0;k<5;k++){ const a = k*TAU/5 + .4; monthDisc.add(arm(0,0,MINR*Math.cos(a),MINR*Math.sin(a),DZ,3.6,2.4,MAT.dateDisc,false)); }
+  monthDisc.add(cyl(9, 3, DZ+1.5, MAT.dateDisc, 28));
+  const star = gearMesh({N:12, m:2, th:2.4, mat:MAT.gR}); star.position.z = DZ+3.2; monthDisc.add(star);
+  MONTHS.forEach((nm,i) => { const th = 90*DEG + i*30*DEG, m = labelMesh(nm, MAT.monDim); m.position.set(MLAB*Math.cos(th), MLAB*Math.sin(th), DZ+3.9); m.rotation.z = th - Math.PI/2; monthDisc.add(m); monthLabels.push(m); });
+}
+// cam on the tens disc + lever to the month star
+const lever = new T.Group();
+{
+  const al = Math.atan2(MD[1]-TD[1], MD[0]-TD[0]);
+  const A_ = [TD[0]+147*Math.cos(al), TD[1]+147*Math.sin(al)];
+  const dM = Math.hypot(A_[0]-MD[0], A_[1]-MD[1]), B_ = [MD[0]+(A_[0]-MD[0])/dM*17, MD[1]+(A_[1]-MD[1])/dM*17];
+  const Pv = [(A_[0]+B_[0])/2, (A_[1]+B_[1])/2];
+  lever.position.set(Pv[0], Pv[1], 0); world.add(lever);
+  lever.add(arm(A_[0]-Pv[0], A_[1]-Pv[1], B_[0]-Pv[0], B_[1]-Pv[1], DZ+3.2, 4.2, 2.4, MAT.steelH, false));
+  const rl = cyl(2.6, 4, DZ+5.2, MAT.goldH, 14); rl.position.set(B_[0]-Pv[0], B_[1]-Pv[1], DZ+5.2); lever.add(rl);
+  world.add(jewel(Pv[0], Pv[1], DZ+5.8, 2.6));
+  // cam: touches the lever mid-way through the tens step 3 -> 0 (rotation -270 deg -> -360 deg)
+  const gam = al + 315*DEG, cam = new T.Mesh(new T.BoxGeometry(9,4.5,4), MAT.goldH);
+  cam.position.set(139*Math.cos(gam), 139*Math.sin(gam), DZ+5.2); cam.rotation.z = gam; tensDisc.add(cam);
+  // window bezel for the month
+  const sh = new T.Shape(); sh.moveTo(-17,-10); sh.lineTo(17,-10); sh.lineTo(17,10); sh.lineTo(-17,10); sh.closePath();
+  const hole = new T.Path(); hole.moveTo(-13.5,-6.5); hole.lineTo(-13.5,6.5); hole.lineTo(13.5,6.5); hole.lineTo(13.5,-6.5); hole.closePath(); sh.holes.push(hole);
+  const bz = new T.Mesh(EXT(sh, 2.4, .35), MAT.steelH); bz.position.set(MD[0], MD[1]+MLAB, 112); world.add(bz);
+}
+const monthState = {cm:-1, mA:0, mFrom:0, mTo:0, t0:-1};
+function lightMonth(m){ monthLabels.forEach((l,i) => l.material = (i === m) ? MAT.numOn : MAT.monDim); }
+function updateMonth(now){
+  const ms = monthState, mo = (window.__MON != null) ? window.__MON : new Date().getMonth();
+  if(ms.cm < 0){ ms.cm = mo; ms.mA = -mo*30*DEG; lightMonth(mo); }
+  else if(mo !== ms.cm){ const n = (mo - ms.cm + 12) % 12; ms.mFrom = ms.mA; ms.mTo = ms.mA - n*30*DEG; ms.cm = mo; ms.t0 = now; lightMonth(mo); }
+  if(ms.t0 >= 0){
+    const k = (now - ms.t0)/900;
+    if(k >= 1){ ms.mA = ms.mTo; ms.t0 = -1; lever.rotation.z = 0; }
+    else { ms.mA = ms.mFrom + (ms.mTo-ms.mFrom)*easeBack(Math.max(0,k)); lever.rotation.z = 12*DEG*Math.sin(Math.PI*Math.min(1,k*1.25)); }
+  }
+  monthDisc.rotation.z = ms.mA;
+}
+/* ---------- PHASE DE LUNE à 8 h 30 (59 dents = 2 lunaisons de 29,5 j) ----------
+   hour wheel (12 h) -> A (24 h) -> B (24 h): at midnight the finger of B pushes the 59-tooth star by one tooth.
+   The rotating part carries two moons on arms; a fixed sky arch (window) is visible in the upper half, a cover hides the moons in the lower half (new moon). */
+const MZ = 44, MWIN0 = 200*DEG, MWIN1 = 340*DEG;      // sky window at the BOTTOM (free area); the cover is on top, partly under the tens disc
+const moonG = new T.Group(); moonG.position.set(pos.MM[0], pos.MM[1], 0); world.add(moonG);
+const MSC = 0.70; moonG.scale.set(MSC, MSC, 1);          // plan scale only (heights unchanged)
+const skyG = new T.Group(); moonG.add(skyG);
+const sectorPts = (r0, r1, a0, a1, n) => { const p = []; for(let i=0;i<=n;i++){ const a = a0 + (a1-a0)*i/n; p.push(new T.Vector2(r1*Math.cos(a), r1*Math.sin(a))); } for(let i=n;i>=0;i--){ const a = a0 + (a1-a0)*i/n; p.push(new T.Vector2(r0*Math.cos(a), r0*Math.sin(a))); } return p; };
+{
+  // rotating part: 59-tooth star, hub, two arms, two moons
+  const star = gearMesh({N:59, m:1.0, th:2.4, mat:MAT.gR}); star.position.z = MZ; skyG.add(star);
+  skyG.add(cyl(15, 3, MZ+5.5, MAT.steelH, 36));
+  [0,180].forEach(deg => {
+    const a = deg*DEG; skyG.add(arm(0,0,62*Math.cos(a),62*Math.sin(a),MZ+6,7,2.4,MAT.steelH,false));
+    const g = new T.Group(); g.position.set(62*Math.cos(a), 62*Math.sin(a), MZ+9);
+    const mo = new T.Mesh(new T.SphereGeometry(22,40,26), MAT.goldH); mo.scale.z = .4; g.add(mo);
+    [[-7,6,4],[7,-5,5],[-1.5,-10,3],[9,8,2.6],[-11,-4,2.4]].forEach(([x,y,r]) => { const c = new T.Mesh(new T.SphereGeometry(r,14,10), MAT.gR); c.scale.z = .25; c.position.set(x,y,8.4); g.add(c); });
+    skyG.add(g);
+  });
+  // fixed sky (window) behind the moons. The window ends are circular LOBES of the moon's own radius, centred where the moon is hidden at new moon:
+  // the moon sliding out from under a lobe shows as a crescent, then a quarter, a gibbous, the full moon... and back.
+  const LOBE = 22.4, TRK = 62, R0W = 36.5, R1W = 106, win = [];
+  for(let i=0;i<=60;i++){ const a = Math.PI + Math.PI*i/60; win.push([R1W*Math.cos(a), R1W*Math.sin(a)]); }          // outer arc, left -> bottom -> right
+  win.push([TRK+LOBE, 0]); for(let i=1;i<=28;i++){ const a = -Math.PI*i/28; win.push([TRK+LOBE*Math.cos(a), LOBE*Math.sin(a)]); }   // right lobe (lower half)
+  win.push([R0W, 0]); for(let i=0;i<=60;i++){ const a = 2*Math.PI - Math.PI*i/60; win.push([R0W*Math.cos(a), R0W*Math.sin(a)]); }       // inner arc, right -> bottom -> left
+  win.push([-(TRK-LOBE), 0]); for(let i=1;i<=28;i++){ const a = -Math.PI*i/28; win.push([-TRK+LOBE*Math.cos(a), LOBE*Math.sin(a)]); }   // left lobe (lower half)
+  const winV = win.map(p => new T.Vector2(p[0], p[1]));
+  const sky = new T.Mesh(EXT(new T.Shape(winV), 2, .3), MAT.sky); sky.position.z = MZ+3.5; moonG.add(sky);
+  let seed = 11; const rnd = () => (seed = (seed*16807) % 2147483647) / 2147483647, ok = (x,y) => y < -3 && Math.hypot(x-TRK,y) > LOBE+3 && Math.hypot(x+TRK,y) > LOBE+3;
+  for(let n=0;n<46;){ const r = 41 + rnd()*62, an = Math.PI + Math.PI*(.02+.96*rnd()), x = r*Math.cos(an), y = r*Math.sin(an); if(!ok(x,y)) continue; n++;
+    const d = new T.Mesh(new T.SphereGeometry(.9+rnd()*1.1,8,6), MAT.numOn); d.position.set(x, y, MZ+6); moonG.add(d); }
+  // cover: the whole ring minus the window (so it also hides the moons in the upper half and under the lobes)
+  const ring = new T.Shape(circ(108,160,false)); ring.holes.push(new T.Path(circ(36,120,true))); ring.holes.push(new T.Path(winV.slice().reverse()));
+  const cover = new T.Mesh(EXT(ring, 2, .3), MAT.dateDisc); cover.position.z = MZ+19; moonG.add(cover);
+  const rim = new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(winV.map(p => new T.Vector3(p.x,p.y,0)), true, 'catmullrom', .02), 360, 1.6, 6, true), MAT.goldH); rim.position.z = MZ+20.4; moonG.add(rim);
+  const bz = new T.Mesh(new T.TorusGeometry(111, 3.6, 10, 140), MAT.steelH); bz.position.z = MZ+19.6; moonG.add(bz);
+  const bz2 = new T.Mesh(new T.TorusGeometry(34.5, 1.4, 8, 60), MAT.goldH); bz2.position.z = MZ+19.6; moonG.add(bz2);
+  [20,65,115,160].forEach(d => { const a = d*DEG; moonG.add(screw(72*Math.cos(a), 72*Math.sin(a), MZ+20.2, 4.2, a, MAT.goldP)); });
+}
+{ // finger of B (pin on B's rim, brushing the star at midnight) + bridges of the moon train
+  const loc = Math.atan2(pos.MM[1]-pos.MB[1], pos.MM[0]-pos.MB[0]) - A.MB.phi0;
+  const RPIN2 = 42.4 + 30.5*MSC - 1.5;       // pin radius on B so that it brushes the (scaled) star teeth at midnight
+  objs['MBw'].add(arm(0,0,RPIN2*Math.cos(loc),RPIN2*Math.sin(loc),41,5,2.4,MAT.dk,false));
+  const pin = cyl(3, 10, 45, MAT.goldH, 14); pin.position.set(RPIN2*Math.cos(loc), RPIN2*Math.sin(loc), 45); objs['MBw'].add(pin);
+  world.add(arm(0,0,pos.MA[0],pos.MA[1],46,10,2.4,MAT.dk,true));
+  world.add(arm(pos.MA[0],pos.MA[1],pos.MB[0],pos.MB[1],46,10,2.4,MAT.dk,true));
+  world.add(arm(pos.MB[0],pos.MB[1],pos.MM[0],pos.MM[1],37.2,9,2.4,MAT.dk,true));
+  [pos.MA,pos.MB].forEach(p => world.add(jewel(p[0],p[1],48.4,2.4,true)));
+  world.add(jewel(pos.MM[0],pos.MM[1],MZ+8.6,3.4));
+}
+const moonState = {ck:-1, mA:0, mFrom:0, mTo:0, t0:-1};
+function moonTooth(){
+  const b = new Date(), noon = new Date(b.getFullYear(), b.getMonth(), b.getDate(), 12, 0, 0);
+  const N = noon.getTime()/86400000 + 2440587.5 + (window.__MOOND || 0) - 2451550.1;        // days since the new moon of 6 Jan 2000
+  return (((Math.round(N*59/59.0612)) % 59) + 59) % 59;
+}
+const moonAngle = k => (270 + (k - 14.75)*(360/59))*DEG;      // full moon (k~15): moon centred in the bottom window; the moon crosses it left to right
+function updateMoon(now){
+  const k = moonTooth(), st = moonState;
+  if(st.ck < 0){ st.ck = k; st.mA = moonAngle(k); }
+  else if(k !== st.ck){ const n = (k - st.ck + 59) % 59; st.mFrom = st.mA; st.mTo = st.mA + n*(360/59)*DEG; st.ck = k; st.t0 = now; }
+  if(st.t0 >= 0){ const t = (now - st.t0)/700; if(t >= 1){ st.mA = st.mTo; st.t0 = -1; } else st.mA = st.mFrom + (st.mTo-st.mFrom)*easeBack(Math.max(0,t)); }
+  skyG.rotation.z = st.mA;
+}
+/* ---------- JOUR DE LA SEMAINE rétrograde (croissant entre 3 h et 5 h; l'arc épouse la courbure du cadran) ----------
+   W24 (24 h) has a 2nd pin -> day lever -> 7-tooth star -> 7-step SNAIL. A feeler lever rides the snail; its rack sector turns the pinion of the hand.
+   Mon..Sun the roller climbs one step a day (hand climbs); on Sunday night it drops off the big step: the hand snaps back to Monday.
+   Everything is carried by a bridge anchored on the arbor of E (and the day lever by an arm from W24). */
+const DWZ = 100, NSTEP = 7, ASTEP = TAU/7, ROLR = 3, LLEV = 60, RR0 = 12, RSTEP = 2.5;
+const N_RACK = 60, N_PIN = 15, HPV = [214,-12], PLV = polarXY(HPV, 37.5, -90*DEG), ACONT = 90*DEG;
+const SN = [PLV[0] + RR0 + 3*RSTEP + ROLR, PLV[1] - LLEV];
+const DAYS = ['LUN','MAR','MER','JEU','VEN','SAM','DIM'];
+function rollerPos(r){   // |R-SN| = r+ROLR and |R-PLV| = LLEV: the west intersection (the roller touches the snail on its west side)
+  const a = r + ROLR, dx = SN[0]-PLV[0], dy = SN[1]-PLV[1], d = Math.hypot(dx,dy), ux = dx/d, uy = dy/d;
+  const x = (LLEV*LLEV - a*a + d*d)/(2*d), h = Math.sqrt(Math.max(0, LLEV*LLEV - x*x));
+  const p1 = [PLV[0]+ux*x - uy*h, PLV[1]+uy*x + ux*h], p2 = [PLV[0]+ux*x + uy*h, PLV[1]+uy*x - ux*h];
+  return p1[0] < p2[0] ? p1 : p2;
+}
+const betaOf = r => { const R = rollerPos(r); return Math.atan2(R[1]-PLV[1], R[0]-PLV[0]); };
+const BETA0 = betaOf(RR0);
+const relLever = r => betaOf(r) - BETA0;
+const pinionPhase = al => (N_RACK*(ACONT - al) + N_PIN*(ACONT + Math.PI) - Math.PI)/N_PIN;
+let handOff = 0;
+{ let m = 0; for(let k=0;k<NSTEP;k++) m += pinionPhase(relLever(RR0 + RSTEP*k)); m /= NSTEP; handOff = 0 - m; }   // mid-week: the hand points outward (east)
+const handAngleOf = k => pinionPhase(relLever(RR0 + RSTEP*k)) + handOff;
+function sectorGear(N, m, a0, a1){
+  const r = m*N/2, rt = r + m, rr = r - 1.25*m, p = TAU/N, k0 = Math.ceil(a0/p), k1 = Math.floor(a1/p), pts = [];
+  for(let k=k0;k<=k1;k++){ const a = k*p, rh = .25*p, tt = .10*p; [[rr,a-rh*1.15],[rr,a-rh],[rt,a-tt],[rt,a+tt],[rr,a+rh],[rr,a+rh*1.15]].forEach(([rad,ang]) => pts.push(new T.Vector2(rad*Math.cos(ang), rad*Math.sin(ang)))); }
+  const aE = k1*p + .25*p*1.15, aS = k0*p - .25*p*1.15; for(let i=0;i<=14;i++){ const a = aE + (aS-aE)*i/14; pts.push(new T.Vector2((rr-7)*Math.cos(a), (rr-7)*Math.sin(a))); }
+  return new T.Shape(pts);
+}
+// snail + 7-tooth star
+const snailG = new T.Group(); snailG.position.set(SN[0], SN[1], 0); world.add(snailG);
+{
+  const pts = [];
+  for(let k=0;k<NSTEP;k++){ const c = Math.PI + k*ASTEP, r = RR0 + RSTEP*k; for(let i=0;i<=12;i++){ const a = c - ASTEP/2 + ASTEP*i/12; pts.push(new T.Vector2(r*Math.cos(a), r*Math.sin(a))); } }
+  const sn = new T.Mesh(EXT(new T.Shape(pts), 2.4, .25), MAT.gR); sn.position.z = DWZ; snailG.add(sn);
+  const star = gearMesh({N:7, m:3, th:2.4, mat:MAT.gR}); star.position.z = DWZ-3; snailG.add(star);
+  snailG.add(cyl(4, 5, DWZ+1.5, MAT.goldH, 20));
+}
+// feeler lever (rotates about PLV) with its roller and rack sector
+const feelerG = new T.Group(); feelerG.position.set(PLV[0], PLV[1], 0); world.add(feelerG);
+{
+  const R0 = rollerPos(RR0), loc = [R0[0]-PLV[0], R0[1]-PLV[1]];
+  feelerG.add(arm(0,0,loc[0],loc[1],DWZ+.6,6,2.4,MAT.steelH,true));
+  const ro = cyl(ROLR, 5, DWZ+2, MAT.goldH, 18); ro.position.set(loc[0], loc[1], DWZ+2); feelerG.add(ro);
+  const sec = new T.Mesh(EXT(sectorGear(N_RACK, 1, 52*DEG, 142*DEG), 2.4, .2), MAT.steelH); sec.position.z = DWZ+.6; feelerG.add(sec);
+  feelerG.add(cyl(5, 3, DWZ+1.8, MAT.goldH, 20));
+}
+// hand pinion + the retrograde hand (above the bridge)
+const dowHandG = new T.Group(); dowHandG.position.set(HPV[0], HPV[1], 0); world.add(dowHandG);
+const dowPinion = new T.Group(); dowHandG.add(dowPinion);
+{
+  const pn = gearMesh({N:N_PIN, m:1, th:2.4, mat:MAT.steelH}); pn.position.z = DWZ+.6; dowPinion.add(pn);
+  const hand = louisXV({parts:[{t:'shaft',y0:-14,y1:36,w0:5.5,w1:3.4},{t:'ring',x:0,y:-18,ro:6,ri:2.8},{t:'ring',x:0,y:44,ro:6.5,ri:3.2,lume:true},{t:'tip',y0:46,y1:62,w:9}], ridges:[{y0:-10,y1:38,w0:1.2,w1:.8}]}, DWZ+13);
+  hand.rotation.z = handOff - Math.PI/2; dowPinion.add(hand);
+  dowPinion.add(cyl(1.8, 18, DWZ+8, MAT.dsteelP, 12));                      // arbor of the hand, through the bridge
+  dowHandG.add(cyl(3.6, 4, DWZ+16.5, MAT.goldH, 20));
+}
+// bridge of the day module: anchored on the arbor of E, it carries the lever pivot, the hand arbor and the snail axis
+{
+  const Ep = [pos.E[0], pos.E[1]], BZ = DWZ+7;
+  const ea = cyl(2.2, 14, DWZ+4, MAT.dsteelP, 14); ea.position.set(Ep[0], Ep[1], DWZ+4); world.add(ea);          // E arbor prolonged up to the bridge
+  world.add(arm(Ep[0],Ep[1],PLV[0],PLV[1],BZ,8,2.4,MAT.steelH,true));
+  world.add(arm(PLV[0],PLV[1],HPV[0],HPV[1],BZ,8,2.4,MAT.steelH,true));
+  world.add(arm(PLV[0],PLV[1],SN[0],SN[1],BZ,8,2.4,MAT.steelH,true));
+  [Ep,PLV,SN].forEach(p => world.add(jewel(p[0],p[1],BZ+2.4,2.6)));
+  world.add(screw((Ep[0]+PLV[0])/2,(Ep[1]+PLV[1])/2,BZ+2.4,3,.7,MAT.goldP));
+  world.add(screw((PLV[0]+SN[0])/2,(PLV[1]+SN[1])/2,BZ+2.4,3,1.2,MAT.goldP));
+}
+// arc scale: graduations and the seven day labels, placed where the hand really points (horizontal reading)
+const dowLabels = [];
+{
+  const th0 = handAngleOf(0), th6 = handAngleOf(NSTEP-1), lo = Math.min(th0,th6) - 7*DEG, hi = Math.max(th0,th6) + 7*DEG, pts = [];
+  for(let i=0;i<=40;i++){ const a = lo + (hi-lo)*i/40; pts.push(new T.Vector3(HPV[0]+63*Math.cos(a), HPV[1]+63*Math.sin(a), DWZ+1)); }
+  world.add(new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(pts), 60, .8, 6, false), MAT.steelH));
+  for(let k=0;k<NSTEP;k++){
+    const a = handAngleOf(k), tk = new T.Mesh(new T.BoxGeometry(7, 1.8, 1.6), MAT.goldH);
+    tk.position.set(HPV[0]+64*Math.cos(a), HPV[1]+64*Math.sin(a), DWZ+1); tk.rotation.z = a; world.add(tk);
+    const lb = labelMesh(DAYS[k], MAT.monDim);
+    lb.position.set(HPV[0]+(70+9.5)*Math.cos(a), HPV[1]+(70+9.5)*Math.sin(a), DWZ+1.2); lb.rotation.z = a; world.add(lb); dowLabels.push(lb);
+  }
+  // the scale is carried by two small arms from the hand bridge to the dial side (a bar behind the labels)
+  const mid = (th0+th6)/2, b1 = [HPV[0]+63*Math.cos(lo), HPV[1]+63*Math.sin(lo)], b2 = [HPV[0]+63*Math.cos(hi), HPV[1]+63*Math.sin(hi)];
+  world.add(arm(HPV[0],HPV[1],b1[0],b1[1],DWZ-1.6,3.4,2,MAT.dk,false)); world.add(arm(HPV[0],HPV[1],b2[0],b2[1],DWZ-1.6,3.4,2,MAT.dk,false));
+  [b1,b2].forEach(p => world.add(screw(p[0],p[1],DWZ-.2,2.6,1,MAT.goldP)));
+}
+// day lever: second pin of W24 pushes it, it pushes the star once a day; it is carried by an arm from W24's axis
+const dayLever = new T.Group();
+{
+  const dW = Math.hypot(SN[0]-pos.W[0], SN[1]-pos.W[1]), uW = [(SN[0]-pos.W[0])/dW, (SN[1]-pos.W[1])/dW];
+  const DPV = [pos.W[0]+uW[0]*94.7, pos.W[1]+uW[1]*94.7];
+  dayLever.position.set(DPV[0], DPV[1], 0); world.add(dayLever);
+  const T1 = [pos.W[0]+uW[0]*54.7, pos.W[1]+uW[1]*54.7], e1 = [T1[0]-DPV[0], T1[1]-DPV[1]];
+  const dS = Math.hypot(DPV[0]-SN[0], DPV[1]-SN[1]), TS = [SN[0]+13*(DPV[0]-SN[0])/dS, SN[1]+13*(DPV[1]-SN[1])/dS], e2 = [TS[0]-DPV[0], TS[1]-DPV[1]];
+  dayLever.add(arm(0,0,e1[0],e1[1],DWZ-1.4,5,2.4,MAT.dk,true)); dayLever.add(arm(0,0,e2[0],e2[1],DWZ-1.4,4.4,2.4,MAT.steelH,true));
+  const tipRoller = cyl(2.2, 4, DWZ-.6, MAT.goldH, 12); tipRoller.position.set(e2[0], e2[1], DWZ-.6); dayLever.add(tipRoller);
+  world.add(arm(pos.W[0],pos.W[1],DPV[0],DPV[1],96.8,8,2.4,MAT.dk,true));                  // support of the day lever
+  world.add(jewel(DPV[0], DPV[1], DWZ+1.4, 2.6));
+  const loc2 = Math.atan2(T1[1]-pos.W[1], T1[0]-pos.W[0]) - A.W.phi0;
+  const pin2 = cyl(2.6, 12, 98.5, MAT.goldH, 14); pin2.position.set(54.7*Math.cos(loc2), 54.7*Math.sin(loc2), 98.5); objs['W24'].add(pin2);
+  // jumper on the star (carried by the bridge)
+  const jp = [SN[0]+30*Math.cos(25*DEG), SN[1]+30*Math.sin(25*DEG)], jr = [SN[0]+11.5*Math.cos(-15*DEG), SN[1]+11.5*Math.sin(-15*DEG)];
+  world.add(arm(jp[0],jp[1],jr[0],jr[1],DWZ-3.6,3.4,2,MAT.steelH,false)); world.add(jewel(jp[0],jp[1],DWZ-1.4,2.2));
+  const jroll = cyl(1.8, 3, DWZ-2.6, MAT.goldH, 12); jroll.position.set(jr[0], jr[1], DWZ-2.6); world.add(jroll);
+  world.add(arm(jp[0],jp[1],SN[0],SN[1],DWZ-5.8,3,2,MAT.dk,false));
+}
+/* ---------- PONT DE QUANTIÈME: carries the axes of the tens, units and month discs and the month lever ---------- */
+{
+  const QZ = 89, cc = [0,142];
+  world.add(arm(TD[0],TD[1],cc[0],cc[1],QZ,9,2.4,MAT.dk,true));
+  world.add(arm(UD[0],UD[1],cc[0],cc[1],QZ,9,2.4,MAT.dk,true));
+  world.add(arm(cc[0],cc[1],MD[0],MD[1],QZ,9,2.4,MAT.dk,true));
+  const pil = cyl(4, QZ+10, (QZ-10)/2, MAT.dk, 16); pil.position.set(cc[0], cc[1], (QZ-10)/2); world.add(pil);       // pillar down to the plate
+  [TD,UD,MD].forEach(p => { const ar = cyl(2.6, DZ+6-QZ, (DZ+6+QZ)/2, MAT.dsteelP, 14); ar.position.set(p[0], p[1], (DZ+6+QZ)/2); world.add(ar); });   // arbors up to the hubs
+  [TD,UD].forEach(p => world.add(jewel(p[0], p[1], DZ+3.2, 3.8)));
+  const lp = [lever.position.x, lever.position.y];
+  world.add(arm(MD[0],MD[1],lp[0],lp[1],DZ+9.5,6,2.2,MAT.steelH,false));          // short bridge for the month lever
+  world.add(jewel(lp[0], lp[1], DZ+11.7, 2.4)); world.add(jewel(MD[0], MD[1], DZ+11.7, 3));
+}
+const dowState = {cd:-1, sA:0, sFrom:0, sTo:0, t0:-1, lev:0, last:0, bump:-1};
+function lightDow(k){ dowLabels.forEach((l,i) => l.material = (i === k) ? MAT.numOn : MAT.monDim); }
+function updateDow(now){
+  const st = dowState, dt = st.last ? Math.min(.1,(now-st.last)/1000) : .016; st.last = now;
+  const k = (window.__DOW != null) ? window.__DOW : ((new Date().getDay() + 6) % 7);          // Monday = 0
+  if(st.cd < 0){ st.cd = k; st.sA = -k*ASTEP; st.lev = relLever(RR0 + RSTEP*k); lightDow(k); }
+  else if(k !== st.cd){ const n = (k - st.cd + NSTEP) % NSTEP; st.sFrom = st.sA; st.sTo = st.sA - n*ASTEP; st.cd = k; st.t0 = now; st.bump = now; lightDow(k); }
+  if(st.t0 >= 0){ const t = (now - st.t0)/700; if(t >= 1){ st.sA = st.sTo; st.t0 = -1; } else st.sA = st.sFrom + (st.sTo-st.sFrom)*easeBack(Math.max(0,t)); }
+  snailG.rotation.z = st.sA;
+  const kk = ((Math.round(-st.sA/ASTEP) % NSTEP) + NSTEP) % NSTEP;                            // step under the roller
+  const target = relLever(RR0 + RSTEP*kk);
+  st.lev += (target - st.lev)*Math.min(1, dt*16);                                            // the return spring snaps the lever
+  feelerG.rotation.z = st.lev;
+  dowPinion.rotation.z = pinionPhase(st.lev);
+  if(st.bump >= 0){ const t = (now - st.bump)/700; if(t >= 1){ st.bump = -1; dayLever.rotation.z = 0; } else dayLever.rotation.z = 9*DEG*Math.sin(Math.PI*Math.min(1,t*1.25)); }
+}
+// date state: follows the phone's calendar; at midnight the discs snap with a small overshoot
+const dateState = {cu:-1, ct:-1, uA:0, tA:0, uFrom:0, uTo:0, tFrom:0, tTo:0, t0:-1};
+const easeBack = k => { const c = 1.6; return 1 + (c+1)*Math.pow(k-1,3) + c*Math.pow(k-1,2); };
+function lightDigits(du, dt){
+  unitsDigits.forEach((m,i) => { if(m) m.material = (i === du) ? MAT.numOn : MAT.dimNum; });
+  tensDigits.forEach((m,i) => { if(m) m.material = (i === dt) ? MAT.numOn : MAT.dimNum; });
+}
+function updateDate(now){
+  const d = (window.__DAY != null) ? window.__DAY : new Date().getDate(), du = d % 10, dt = Math.floor(d/10), st = dateState;
+  if(st.cu < 0){ st.cu = du; st.ct = dt; st.uA = -du*36*DEG; st.tA = -dt*90*DEG; lightDigits(du, dt); }
+  else if(du !== st.cu || dt !== st.ct){
+    const nu = (du - st.cu + 10) % 10, nt = (dt - st.ct + 4) % 4;
+    st.uFrom = st.uA; st.uTo = st.uA - nu*36*DEG; st.tFrom = st.tA; st.tTo = st.tA - nt*90*DEG;
+    st.cu = du; st.ct = dt; st.t0 = now; lightDigits(du, dt);
+  }
+  if(st.t0 >= 0){
+    const k = (now - st.t0)/750;
+    if(k >= 1){ st.uA = st.uTo; st.tA = st.tTo; st.t0 = -1; }
+    else { const e = easeBack(Math.max(0,k)); st.uA = st.uFrom + (st.uTo-st.uFrom)*e; st.tA = st.tFrom + (st.tTo-st.tFrom)*e; }
+  }
+  unitsDisc.rotation.z = st.uA; tensDisc.rotation.z = st.tA;
+  updateMonth(now);
+  updateMoon(now);
+  updateDow(now);
+}
+
+/* ---------- dial: minute track + hands ---------- */
+{
+  const g = new T.Group(); g.position.z = 148; const R = DR;
+  g.add(new T.Mesh(new T.TorusGeometry(R-14, .8, 8, 240), MAT.dsteel));
+  for(let i=0;i<60;i++){
+    const maj = i%5===0, a = i*6*DEG, len = maj?18:7, wd = maj?3.6:1.4;
+    const t = new T.Mesh(new T.BoxGeometry(wd, len, 1.8), maj ? MAT.lume : MAT.steelP);
+    const rad = R - len/2; t.position.set(rad*Math.sin(a), rad*Math.cos(a), 0); t.rotation.z = -a; g.add(t);
+  }
+  [0,90,180,270].forEach(d => { const a = d*DEG; g.add(screw((R+10)*Math.sin(a),(R+10)*Math.cos(a),-.5,5,a,MAT.goldP)); });
+  world.add(g);
+}
+/* ---------- Louis XV hands: pierced ring, spearhead tip, volutes, polished ridge, black outline + drop shadow ---------- */
+function partShape(p, pad){
+  const s = new T.Shape();
+  if(p.t === 'ring'){
+    s.absarc(0,0,p.ro+pad,0,TAU,false);
+    const h = new T.Path(); h.absarc(0,0,Math.max(1.5,p.ri-pad),0,TAU,true); s.holes.push(h);
+  } else if(p.t === 'shaft'){
+    const y0 = p.y0-pad, y1 = p.y1+pad, w0 = p.w0+2*pad, w1 = p.w1+2*pad;
+    s.moveTo(-w0/2,y0); s.lineTo(w0/2,y0); s.lineTo(w1/2,y1); s.lineTo(-w1/2,y1); s.closePath();
+  } else if(p.t === 'tip'){
+    const y0 = p.y0-pad*.6, y1 = p.y1+pad*1.5, w = p.w+2*pad, d = y1-y0;
+    s.moveTo(-w/2,y0); s.quadraticCurveTo(-w*.16, y0+d*.6, 0, y1); s.quadraticCurveTo(w*.16, y0+d*.6, w/2, y0); s.closePath();
+  }
+  return s;
+}
+function louisXV(spec, z){
+  const g = new T.Group();
+  spec.parts.forEach(p => {
+    const place = m => { m.position.x += p.x||0; m.position.y += p.y||0; return m; };
+    const sh = new T.Mesh(EXT(partShape(p, 6.5), .2, .05), MAT.shadow); sh.position.z = z-5; g.add(place(sh));
+    const un = new T.Mesh(EXT(partShape(p, 2.3), 1, .15), MAT.black); un.position.z = z-.9; g.add(place(un));
+  });
+  spec.parts.forEach(p => {
+    const pl = new T.Mesh(EXT(partShape(p, 0), 1.6, .4), MAT.handG); pl.position.z = z; pl.position.x += p.x||0; pl.position.y += p.y||0; g.add(pl);
+    if(p.t === 'ring' && p.lume){ const d = new T.Mesh(new T.CylinderGeometry(p.ri-2.1, p.ri-2.1, .6, 28), MAT.lumeH); d.rotation.x = Math.PI/2; d.position.set(p.x||0, p.y||0, z-.55); g.add(d); }
+  });
+  (spec.ridges||[]).forEach(r => { const m = new T.Mesh(EXT(partShape({t:'shaft',y0:r.y0,y1:r.y1,w0:r.w0,w1:r.w1},0), .5, .12), MAT.handR); m.position.z = z+1.6; g.add(m); });
+  return g;
+}
+function hourSpec(L){
+  const yR = L*.58, R = 24, parts = [
+    {t:'shaft', y0:-30, y1:L*.42, w0:10, w1:10},
+    {t:'ring', x:0, y:-36, ro:9, ri:4.5},
+    {t:'ring', x:0, y:yR, ro:R, ri:14, lume:true},
+    {t:'tip', y0:yR+R-5, y1:L, w:27}];
+  [-1,1].forEach(sg => { const a = (-90+sg*55)*Math.PI/180; parts.push({t:'ring', x:(R+4)*Math.cos(a), y:yR+(R+4)*Math.sin(a), ro:7, ri:3.2}); });
+  return {parts, ridges:[{y0:-26,y1:yR-R+2,w0:2,w1:2},{y0:yR+R-2,y1:L-6,w0:2.2,w1:.5}]};
+}
+function minSpec(L){
+  const yR = L*.77, R = 13.5;
+  return {parts:[
+    {t:'shaft', y0:-40, y1:L*.8, w0:6, w1:4},
+    {t:'ring', x:0, y:-46, ro:9, ri:4.5},
+    {t:'ring', x:0, y:L*.42, ro:7.5, ri:3.6},
+    {t:'ring', x:0, y:yR, ro:R, ri:7.8, lume:true},
+    {t:'tip', y0:yR+R-4, y1:L, w:11}],
+    ridges:[{y0:-36,y1:yR-R+2,w0:1.6,w1:1.2},{y0:yR+R-2,y1:L-5,w0:1.6,w1:.4}]};
+}
+const hourHand = louisXV(hourSpec(205), 152.5), minHand = louisXV(minSpec(315), 157.5);
+world.add(hourHand, minHand);
+{ // centre boss: domed cap, polished ring, ruby
+  const cap = cyl(11, 5, 161, MAT.handG, 40); world.add(cap);
+  const rg = new T.Mesh(new T.TorusGeometry(6.5, 1.2, 10, 40), MAT.handR); rg.position.z = 164; world.add(rg);
+  const ru = new T.Mesh(new T.SphereGeometry(3.6,18,14), MAT.ruby); ru.scale.z = .7; ru.position.z = 164; world.add(ru);
+}
+
+/* ---------- time-driven update ---------- */
+const FREQ = 3, AMP = 235*DEG;
+function update(S){
+  const th = TAU*S/60;
+  for(const id in A) A[id].phi = A[id].phi0 - A[id].k*th;
+  GEARS.forEach(g => { if(!g.virtual) objs[g.id].rotation.z = A[g.ax].phi; });
+  const Om = A.K2.phi;
+  tourG.rotation.z = Om;                    // 3rd axis: the whole carrier (ring + frame + cage) turns about Z
+  const phiK = A.K.phi;
+  // 1) frame pinion rolling on the ring's crown teeth: the frame turns 3x faster than the ring (20 s per turn)
+  const theta = (NCR/NPN)*Om - Math.PI/2 - Math.PI/NPN;
+  F.rotation.y = theta;
+  // 2) (inner cage drive below)
+  // 3) planet Ps rolling on the fixed wheel Fs (axes parallel to Y)
+  const sPs = theta + (NFs*(theta + Math.PI) - Math.PI)/NPs;
+  const rRail = sPs - theta;
+  rail.rotation.y = rRail;
+  // 4) bevel Br (on the rail) -> Bc (on the inner axle), both inside the frame
+  const rBr = -rRail;
+  const rBc = -Math.PI/2 + (NBr*(Math.PI/2 - rBr) - Math.PI)/NBc;
+  const sIn = -rBc;
+  innerSpin.rotation.z = sIn;
+  // 5) escape pinion rolling around the wheel fixed to the frame
+  const al = ANGE + sIn, phiP = (NF*al + NP*(al+Math.PI) - Math.PI)/NP;
+  escG.rotation.z = phiP - sIn;
+  const osc = Math.sin(TAU*FREQ*S);
+  balG.rotation.z = AMP*osc;
+  forkG.rotation.z = 7*DEG*Math.tanh(7*osc);
+  const thH = TAU*(window.__SH != null ? window.__SH : S)/60;      // hands can be frozen separately (video mode)
+  minHand.rotation.z = -A.C.k*thH;
+  hourHand.rotation.z = -A.H.k*thH;
+  updateDate(performance.now());
+  window.__ang = {theta, sIn, Om, phiK};
+}
+function secondsNow(){ const d = new Date(); return d.getHours()*3600 + d.getMinutes()*60 + d.getSeconds() + d.getMilliseconds()/1000; }
+window.__S = null;
+
+/* ---------- fixed front view ---------- */
+world.position.set(0,0,-85);
+scene.add(world);
+function resize(){
+  const w = window.innerWidth, h = window.innerHeight; renderer.setSize(w,h,false);
+  camera.aspect = w/h; camera.updateProjectionMatrix();
+  const R = 372, vt = Math.tan(camera.fov*DEG/2);
+  const dist = Math.max(R/(vt*camera.aspect), R/vt*.78) * 1.03;
+  camera.position.set(0,0,dist); camera.lookAt(0,0,0);
+}
+window.addEventListener('resize', resize); resize();
+let lastDraw = 0;
+function frame(now){
+  requestAnimationFrame(frame);
+  if(document.hidden) return;                       // nothing to draw when the screen is off / page hidden
+  if(WALL && now - lastDraw < 33) return;           // ~30 fps in wallpaper mode
+  lastDraw = now;
+  update(window.__S != null ? window.__S : secondsNow());
+  renderer.render(scene, camera);
+  window.__ready = true;
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
