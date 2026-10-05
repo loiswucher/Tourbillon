@@ -959,12 +959,16 @@ function secondsNow(){ const d = new Date(); return d.getHours()*3600 + d.getMin
 window.__S = null;
 
 /* ---------- fixed front view ---------- */
-world.position.set(0,0,-85);
-scene.add(world);
+// slightly offset view: a gentle 3/4 angle shows the depth (planes, bridges). Add ?face to the address for the straight front view.
+const TILT = /[?&]face/.test(location.search) ? 0 : (parseFloat((location.search.match(/[?&]tilt=([\d.]+)/)||[])[1]) || 1);
+const rig = new T.Group(); scene.add(rig); rig.add(world); world.position.set(0,0,-148);      // pivot on the dial plane so the dial stays centred when tilted
+rig.quaternion.setFromEuler(new T.Euler(-0.25*TILT, -0.34*TILT, -0.035*TILT, 'YXZ'));   // leaning to the left keeps the moon in the picture; the weekday labels may lose a few letters at the right edge
+window.__tilt = (p,y,r) => rig.quaternion.setFromEuler(new T.Euler(p,y,r,'YXZ'));
 function resize(){
   const w = window.innerWidth, h = window.innerHeight; renderer.setSize(w,h,false);
   camera.aspect = w/h; camera.updateProjectionMatrix();
-  const R = 372, vt = Math.tan(camera.fov*DEG/2);
+  const ZOOMV = parseFloat((location.search.match(/[?&]zoom=([\d.]+)/)||[])[1]) || 1.39;     // >1 = closer; 1.39 slightly crops the dial at 9 o'clock and the weekday letters at 3 o'clock; ?zoom=1 shows the full dial
+  const R = 372*(1 + .06*TILT)/ZOOMV, vt = Math.tan(camera.fov*DEG/2);
   const dist = Math.max(R/(vt*camera.aspect), R/vt*.78) * 1.03;
   camera.position.set(0,0,dist); camera.lookAt(0,0,0);
 }
