@@ -84,6 +84,8 @@ const MAT = {
   steel: metal(0xdbe1ea,.2,true),   dsteel: metal(0x7b8594,.34,true),
   goldP: metal(0xf6cf90,.16,false), steelP: metal(0xe6ebf2,.14,false), dsteelP: metal(0x8a93a2,.3,false),
   gG : new T.MeshStandardMaterial({color:0x5a4528, metalness:.85, roughness:.6, envMapIntensity:.42, bumpMap:grain, bumpScale:.3}),   // train: dark satin bronze
+  moonLit : new T.MeshStandardMaterial({color:0xffc84a, metalness:.8, roughness:.4, emissive:0x6a3d08, emissiveIntensity:.7, side:T.DoubleSide}),
+  moonDark: new T.MeshStandardMaterial({color:0x0e1840, metalness:.1, roughness:.9, envMapIntensity:.1, emissive:0x081a55, emissiveIntensity:.55, side:T.DoubleSide}),
   gR : new T.MeshStandardMaterial({color:0x5c3a2c, metalness:.85, roughness:.6, envMapIntensity:.42, bumpMap:grain, bumpScale:.3}),
   gS : new T.MeshStandardMaterial({color:0x474e5a, metalness:.85, roughness:.58, envMapIntensity:.42, bumpMap:grain, bumpScale:.3}),
   dk : new T.MeshStandardMaterial({color:0x2e343d, metalness:.85, roughness:.6, envMapIntensity:.4}),
@@ -638,18 +640,32 @@ const MZ = 44, MWIN0 = 200*DEG, MWIN1 = 340*DEG;      // sky window at the BOTTO
 const moonG = new T.Group(); moonG.position.set(pos.MM[0], pos.MM[1], 0); world.add(moonG);
 const MSC = 0.70; moonG.scale.set(MSC, MSC, 1);          // plan scale only (heights unchanged)
 const skyG = new T.Group(); moonG.add(skyG);
+const BR = 26, BY0 = -68, MZ0 = MZ + 28, BY0t = -19, BY0b = BY0 - BR - 6;     // ball radius, centre, centre height; axle spans BY0t..BY0b
+let moonBall = null, moonB2 = null;
 const sectorPts = (r0, r1, a0, a1, n) => { const p = []; for(let i=0;i<=n;i++){ const a = a0 + (a1-a0)*i/n; p.push(new T.Vector2(r1*Math.cos(a), r1*Math.sin(a))); } for(let i=n;i>=0;i--){ const a = a0 + (a1-a0)*i/n; p.push(new T.Vector2(r0*Math.cos(a), r0*Math.sin(a))); } return p; };
 {
-  // rotating part: 59-tooth star, hub, two arms, two moons
+  // rotating part: 59-tooth star (1 tooth / day), hub, post, bevel B1 (30 teeth) that drives the moon BALL through bevel B2 (15 teeth): 2:1 -> one turn of the ball per lunation
   const star = gearMesh({N:59, m:1.0, th:2.4, mat:MAT.gR}); star.position.z = MZ; skyG.add(star);
   skyG.add(cyl(15, 3, MZ+5.5, MAT.steelH, 36));
-  [0,180].forEach(deg => {
-    const a = deg*DEG; skyG.add(arm(0,0,62*Math.cos(a),62*Math.sin(a),MZ+6,7,2.4,MAT.steelH,false));
-    const g = new T.Group(); g.position.set(62*Math.cos(a), 62*Math.sin(a), MZ+9);
-    const mo = new T.Mesh(new T.SphereGeometry(22,40,26), MAT.goldH); mo.scale.z = .4; g.add(mo);
-    [[-7,6,4],[7,-5,5],[-1.5,-10,3],[9,8,2.6],[-11,-4,2.4]].forEach(([x,y,r]) => { const c = new T.Mesh(new T.SphereGeometry(r,14,10), MAT.gR); c.scale.z = .25; c.position.set(x,y,8.4); g.add(c); });
-    skyG.add(g);
-  });
+  skyG.add(cyl(4.2, MZ0-7.5-(MZ+6), (MZ+6+MZ0-7.5)/2, MAT.steelH, 20));
+  const b1 = bevelMesh(30, 1, 4, Math.atan(2), MAT.steelH, 5); b1.position.z = MZ0-7.5; skyG.add(b1);
+  // fixed: bevel B2 (axis = vertical), axle, the ball (half gold / half night blue), lower pivot
+  const b2g = base(moonG, [0,-15,MZ0], [1,0,0], [0,0,-1], [0,1,0]);
+  moonB2 = bevelMesh(15, 1, 4, Math.atan(.5), MAT.steelH, 0); b2g.add(moonB2);
+  const axle = new T.Mesh(new T.CylinderGeometry(1.9,1.9,BY0b-BY0t,16), MAT.dsteelP); axle.position.set(0,(BY0b+BY0t)/2,MZ0); moonG.add(axle);
+  moonBall = new T.Group(); moonBall.position.set(0,BY0,MZ0); moonG.add(moonBall);
+  const gl = new T.SphereGeometry(BR,56,36,-Math.PI/2,Math.PI,0,Math.PI); gl.rotateY(-Math.PI/2);
+  const gd = new T.SphereGeometry(BR,56,36,Math.PI/2,Math.PI,0,Math.PI); gd.rotateY(-Math.PI/2);
+  moonBall.add(new T.Mesh(gl, MAT.moonLit)); moonBall.add(new T.Mesh(gd, MAT.moonDark));
+  [[-.42,.36,3.6],[.38,.18,4.4],[-.1,-.45,3.0],[.45,-.35,2.6],[-.5,-.1,2.4],[.05,.62,2.4]].forEach(([x,y,r]) => {
+    const zz = -Math.sqrt(1-x*x-y*y), c = new T.Mesh(new T.SphereGeometry(r,14,10), MAT.gR); c.scale.z = .45; c.position.set(x*BR*.98, y*BR*.98, zz*BR*.98); c.lookAt(x*BR*3, y*BR*3, zz*BR*3); moonBall.add(c); });
+  // bridge: collar on the axle -> arm over the bevels -> anchored on the cover (upper half); lower pivot on a post standing on the cover
+  const col = cyl(4.4, 6, MZ0+3, MAT.goldH, 20); col.position.x = 0; col.position.y = -19; moonG.add(col);
+  moonG.add(arm(0,-19,0,52,MZ0+4.5,7,2.4,MAT.dk,true));
+  moonG.add(jewel(0,-19,MZ0+8,3.2)); moonG.add(screw(0,52,MZ0+7,4.2,.5,MAT.goldP));
+  moonG.add(arm(0,BY0b+1,0,-114,MZ0-1.5,6,2.2,MAT.dk,true));
+  const post = cyl(3.6, MZ0-1.5-(MZ+21), (MZ0-1.5+MZ+21)/2, MAT.dk, 16); post.position.y = -114; moonG.add(post);
+  moonG.add(jewel(0,BY0b+1,MZ0+.6,2.6));
   // fixed sky (window) behind the moons. The window ends are circular LOBES of the moon's own radius, centred where the moon is hidden at new moon:
   // the moon sliding out from under a lobe shows as a crescent, then a quarter, a gibbous, the full moon... and back.
   const LOBE = 22.4, TRK = 62, R0W = 36.5, R1W = 106, win = [];
@@ -659,7 +675,7 @@ const sectorPts = (r0, r1, a0, a1, n) => { const p = []; for(let i=0;i<=n;i++){ 
   win.push([-(TRK-LOBE), 0]); for(let i=1;i<=28;i++){ const a = -Math.PI*i/28; win.push([-TRK+LOBE*Math.cos(a), LOBE*Math.sin(a)]); }   // left lobe (lower half)
   const winV = win.map(p => new T.Vector2(p[0], p[1]));
   const sky = new T.Mesh(EXT(new T.Shape(winV), 2, .3), MAT.sky); sky.position.z = MZ+3.5; moonG.add(sky);
-  let seed = 11; const rnd = () => (seed = (seed*16807) % 2147483647) / 2147483647, ok = (x,y) => y < -3 && Math.hypot(x-TRK,y) > LOBE+3 && Math.hypot(x+TRK,y) > LOBE+3;
+  let seed = 11; const rnd = () => (seed = (seed*16807) % 2147483647) / 2147483647, ok = (x,y) => y < -3 && Math.hypot(x,y-BY0) > BR+9 && Math.abs(x) > 9 && Math.hypot(x-TRK,y) > LOBE+3 && Math.hypot(x+TRK,y) > LOBE+3;
   for(let n=0;n<46;){ const r = 41 + rnd()*62, an = Math.PI + Math.PI*(.02+.96*rnd()), x = r*Math.cos(an), y = r*Math.sin(an); if(!ok(x,y)) continue; n++;
     const d = new T.Mesh(new T.SphereGeometry(.9+rnd()*1.1,8,6), MAT.numOn); d.position.set(x, y, MZ+6); moonG.add(d); }
   // cover: the whole ring minus the window (so it also hides the moons in the upper half and under the lobes)
@@ -694,6 +710,8 @@ function updateMoon(now){
   else if(k !== st.ck){ const n = (k - st.ck + 59) % 59; st.mFrom = st.mA; st.mTo = st.mA + n*(360/59)*DEG; st.ck = k; st.t0 = now; }
   if(st.t0 >= 0){ const t = (now - st.t0)/700; if(t >= 1){ st.mA = st.mTo; st.t0 = -1; } else st.mA = st.mFrom + (st.mTo-st.mFrom)*easeBack(Math.max(0,t)); }
   skyG.rotation.z = st.mA;
+  const psi = 2*(st.mA - Math.PI);               // 2:1 -> the ball turns once per lunation (0 = new moon, lit side facing away)
+  moonBall.rotation.y = -psi; moonB2.rotation.z = -psi;
 }
 /* ---------- JOUR DE LA SEMAINE rétrograde (croissant entre 3 h et 5 h; l'arc épouse la courbure du cadran) ----------
    W24 (24 h) has a 2nd pin -> day lever -> 7-tooth star -> 7-step SNAIL. A feeler lever rides the snail; its rack sector turns the pinion of the hand.
