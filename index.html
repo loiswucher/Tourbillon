@@ -654,6 +654,7 @@ const sectorPts = (r0, r1, a0, a1, n) => { const p = []; for(let i=0;i<=n;i++){ 
   moonB2 = bevelMesh(15, 1, 4, Math.atan(.5), MAT.steelH, 0); b2g.add(moonB2);
   const axle = new T.Mesh(new T.CylinderGeometry(1.9,1.9,BY0b-BY0t,16), MAT.dsteelP); axle.position.set(0,(BY0b+BY0t)/2,MZ0); moonG.add(axle);
   moonBall = new T.Group(); moonBall.position.set(0,BY0,MZ0); moonG.add(moonBall);
+  moonBall.scale.z = MSC;       // the moon group is flattened in plan only: keep the ball a true sphere
   const gl = new T.SphereGeometry(BR,56,36,-Math.PI/2,Math.PI,0,Math.PI); gl.rotateY(-Math.PI/2);
   const gd = new T.SphereGeometry(BR,56,36,Math.PI/2,Math.PI,0,Math.PI); gd.rotateY(-Math.PI/2);
   moonBall.add(new T.Mesh(gl, MAT.moonLit)); moonBall.add(new T.Mesh(gd, MAT.moonDark));
@@ -704,6 +705,7 @@ function moonTooth(){
   return (((Math.round(N*59/59.0612)) % 59) + 59) % 59;
 }
 const moonAngle = k => (270 + (k - 14.75)*(360/59))*DEG;      // full moon (k~15): moon centred in the bottom window; the moon crosses it left to right
+const _mbp = new T.Vector3(), _mbv = new T.Vector3(), _mbq = new T.Quaternion();
 function updateMoon(now){
   const k = moonTooth(), st = moonState;
   if(st.ck < 0){ st.ck = k; st.mA = moonAngle(k); }
@@ -711,7 +713,11 @@ function updateMoon(now){
   if(st.t0 >= 0){ const t = (now - st.t0)/700; if(t >= 1){ st.mA = st.mTo; st.t0 = -1; } else st.mA = st.mFrom + (st.mTo-st.mFrom)*easeBack(Math.max(0,t)); }
   skyG.rotation.z = st.mA;
   const psi = 2*(st.mA - Math.PI);               // 2:1 -> the ball turns once per lunation (0 = new moon, lit side facing away)
-  moonBall.rotation.y = -psi; moonB2.rotation.z = -psi;
+  // the picture is seen from a tilted, off-axis camera: turn the ball by the viewing azimuth so the lit fraction SEEN is the true one
+  moonG.updateWorldMatrix(true, false); moonBall.getWorldPosition(_mbp); _mbv.copy(camera.position).sub(_mbp);
+  moonG.getWorldQuaternion(_mbq).invert(); _mbv.applyQuaternion(_mbq);
+  const phi = Math.atan2(_mbv.x, _mbv.z);
+  moonBall.rotation.y = phi - psi; moonB2.rotation.z = -psi;
 }
 /* ---------- JOUR DE LA SEMAINE rétrograde (croissant entre 3 h et 5 h; l'arc épouse la courbure du cadran) ----------
    W24 (24 h) has a 2nd pin -> day lever -> 7-tooth star -> 7-step SNAIL. A feeler lever rides the snail; its rack sector turns the pinion of the hand.
