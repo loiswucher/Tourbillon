@@ -98,6 +98,7 @@ const MAT = {
   dimNum: new T.MeshStandardMaterial({color:0x6b7380, metalness:.6, roughness:.6, envMapIntensity:.35, side:T.DoubleSide}),
   dateDisc: new T.MeshStandardMaterial({color:0x080a0e, metalness:.4, roughness:.9, envMapIntensity:.04}),
   monDim: new T.MeshStandardMaterial({color:0x3b424d, metalness:.5, roughness:.7, envMapIntensity:.2, side:T.DoubleSide}),
+  sea : new T.MeshStandardMaterial({color:0x020812, metalness:.2, roughness:.9, envMapIntensity:.05, emissive:0x082450, emissiveIntensity:.16}),
   sky : new T.MeshStandardMaterial({color:0x040a1e, metalness:.2, roughness:.9, envMapIntensity:.05, emissive:0x08205c, emissiveIntensity:.55}),
   numOn: new T.MeshStandardMaterial({color:0xffffff, metalness:0, roughness:.4, emissive:0xf3e6bf, emissiveIntensity:1.0, side:T.DoubleSide}),
   rubyD: new T.MeshPhysicalMaterial({color:0x7a0a1a, metalness:0, roughness:.2, clearcoat:.6}),
@@ -217,7 +218,9 @@ pos.M = polarXY(pos.C, 30, 105*DEG);
 pos.H = pos.C.slice();
 // moon phase at 7:30 : hour-wheel axis -> A (24 h) -> B (24 h, finger) -> moon star
 const DIR730 = 195*DEG;
+const MDm = 42.4/77;      // module of the lunar-day train: D (57) - idler (19) - L (59) fill the 42.4 between B and the sky centre
 pos.MA = polarXY(pos.C, 86.4, DIR730); pos.MB = polarXY(pos.MA, 115.2, DIR730); pos.MM = polarXY(pos.MB, 42.4, DIR730);   // moon centre at 244 on the 8:30 ray: radius 80 fits between the date disc, the carrier ring and the dial track
+pos.MI = [pos.MB[0] + (pos.MM[0]-pos.MB[0])*(38*MDm/42.4), pos.MB[1] + (pos.MM[1]-pos.MB[1])*(38*MDm/42.4)];
 // grande date at 12 o'clock: tens disc (west) and units disc (east); the 24 h wheel W sits under the units disc
 const UD = [143,142], TD = [-143,142];
 pos.W = polarXY(UD, 63, 235*DEG);
@@ -251,11 +254,15 @@ const GEARS = [
   // moon train (below the carrier ring): hour wheel x2 -> 24 h wheels A and B
   {id:'Hw2', ax:'H',  N:24, m:2.4, z:40, th:3, mat:MAT.gS},
   {id:'MAw', ax:'MA', N:48, m:2.4, z:40, th:3, spokes:8, hub:.12, rim:.055, sw:.034, mat:MAT.gR},
-  {id:'MBw', ax:'MB', N:48, m:2.4, z:40, th:3, spokes:8, hub:.12, rim:.055, sw:.034, mat:MAT.gG}
+  {id:'MBw', ax:'MB', N:48, m:2.4, z:40, th:3, spokes:8, hub:.12, rim:.055, sw:.034, mat:MAT.gG},
+  // lunar-day train (behind the sky plate): D 57 on the 24 h wheel B -> idler 19 -> L 59 carrying the arm: 24 h x 59/57 = 24 h 50 min
+  {id:'Dw', ax:'MB', N:57, m:MDm, z:43.6, th:2.2, spokes:5, hub:.2, rim:.1, sw:.1, mat:MAT.gS},
+  {id:'Iw', ax:'MI', N:19, m:MDm, z:43.6, th:2.2, mat:MAT.gS},
+  {id:'Lw', ax:'MM', N:59, m:MDm, z:43.6, th:2.2, spokes:5, hub:.2, rim:.1, sw:.1, mat:MAT.gR}
 ];
 const GI = {}; GEARS.forEach(g => GI[g.id] = g);
 const MESH = [['Rw','E1'],['E3','Cr'],['Rp','Tw'],['Tp','Cw'],['Cpn','Bw'],['Pc','Mw'],['Mp','Hw'],['Mq','I1a'],['I1b','W24'],['Hw2','MAw'],['MAw','MBw']];
-['K','K2','E','R','T','C','B','M','H','I1','W','MA','MB'].forEach(id => A[id] = {id, x:pos[id][0], y:pos[id][1], k:0, phi0:0});
+['K','K2','E','R','T','C','B','M','H','I1','W','MA','MB','MM','MI'].forEach(id => A[id] = {id, x:pos[id][0], y:pos[id][1], k:0, phi0:0});
 A.R.k = 1;                                  // the R wheel turns once a minute (7.5-min third wheel x 7.5)
 MESH.forEach(([pa,ch]) => {
   const g1 = GI[pa], g2 = GI[ch], a1 = A[g1.ax], a2 = A[g2.ax];
@@ -282,7 +289,7 @@ GEARS.forEach(g => {
 });
 
 // arbors, bridges, jewels
-['B','C','T','R','E','M','I1','W','MA','MB'].forEach(id => {
+['B','C','T','R','E','M','I1','W','MA','MB','MI'].forEach(id => {
   const gs = GEARS.filter(g => g.ax===id), z0 = Math.min(...gs.map(g=>g.z)), z1 = Math.max(...gs.map(g=>g.z+g.th));
   const ar = cyl(1.6, z1 - z0 + 12, (z0+z1)/2 - 2, MAT.dsteelP, 14); ar.position.x = A[id].x; ar.position.y = A[id].y; world.add(ar);
 });
@@ -633,91 +640,98 @@ function updateMonth(now){
   }
   monthDisc.rotation.z = ms.mA;
 }
-/* ---------- PHASE DE LUNE à 8 h 30 (59 dents = 2 lunaisons de 29,5 j) ----------
-   hour wheel (12 h) -> A (24 h) -> B (24 h): at midnight the finger of B pushes the 59-tooth star by one tooth.
-   The rotating part carries two moons on arms; a fixed sky arch (window) is visible in the upper half, a cover hides the moons in the lower half (new moon). */
-const MZ = 44, MWIN0 = 200*DEG, MWIN1 = 340*DEG;      // sky window at the BOTTOM (free area); the cover is on top, partly under the tens disc
+/* ---------- LUNE à 8 h 30 : un paysage de nuit (ciel étoilé au-dessus de l'horizon, mer en dessous) ----------
+   Hour wheel x2 -> wheel B (24 h) -> D (57) -> idler (19) -> L (59): L turns once per LUNAR day (24 h 50 min) and carries the arm of the moon.
+   Seen from the observer, the moon's hour angle = sun's (24 h) minus the phase: it rises in the east (left), culminates, sets in the west (right) behind the sea.
+   On the arm: a 57-tooth star advanced by a fixed finger each time the arm passes the nadir (once per lunar day), 2:1 bevel pair -> the moon BALL turns once per lunation. */
+const MZ = 44, MZ0 = MZ + 24, BR = 22, RB = 76, RS = 36, REND = 106, RW = 104, COVZ = MZ + 41, LON = 5.5;
 const moonG = new T.Group(); moonG.position.set(pos.MM[0], pos.MM[1], 0); world.add(moonG);
 const MSC = 0.70; moonG.scale.set(MSC, MSC, 1);          // plan scale only (heights unchanged)
-const skyG = new T.Group(); moonG.add(skyG);
-const BR = 26, BY0 = -68, MZ0 = MZ + 28, BY0t = -19, BY0b = BY0 - BR - 6;     // ball radius, centre, centre height; axle spans BY0t..BY0b
-let moonBall = null, moonB2 = null;
-const sectorPts = (r0, r1, a0, a1, n) => { const p = []; for(let i=0;i<=n;i++){ const a = a0 + (a1-a0)*i/n; p.push(new T.Vector2(r1*Math.cos(a), r1*Math.sin(a))); } for(let i=n;i>=0;i--){ const a = a0 + (a1-a0)*i/n; p.push(new T.Vector2(r0*Math.cos(a), r0*Math.sin(a))); } return p; };
+const armG = new T.Group(); moonG.add(armG);
+let moonBall = null, moonB2 = null, starG = null;
 {
-  // rotating part: 59-tooth star (1 tooth / day), hub, post, bevel B1 (30 teeth) that drives the moon BALL through bevel B2 (15 teeth): 2:1 -> one turn of the ball per lunation
-  const star = gearMesh({N:59, m:1.0, th:2.4, mat:MAT.gR}); star.position.z = MZ; skyG.add(star);
-  skyG.add(cyl(15, 3, MZ+5.5, MAT.steelH, 36));
-  skyG.add(cyl(4.2, MZ0-7.5-(MZ+6), (MZ+6+MZ0-7.5)/2, MAT.steelH, 20));
-  const b1 = bevelMesh(30, 1, 4, Math.atan(2), MAT.steelH, 5); b1.position.z = MZ0-7.5; skyG.add(b1);
-  // fixed: bevel B2 (axis = vertical), axle, the ball (half gold / half night blue), lower pivot
-  const b2g = base(moonG, [0,-15,MZ0], [1,0,0], [0,0,-1], [0,1,0]);
-  moonB2 = bevelMesh(15, 1, 4, Math.atan(.5), MAT.steelH, 0); b2g.add(moonB2);
-  const axle = new T.Mesh(new T.CylinderGeometry(1.9,1.9,BY0b-BY0t,16), MAT.dsteelP); axle.position.set(0,(BY0b+BY0t)/2,MZ0); moonG.add(axle);
-  moonBall = new T.Group(); moonBall.position.set(0,BY0,MZ0); moonG.add(moonBall);
-  moonBall.scale.z = MSC;       // the moon group is flattened in plan only: keep the ball a true sphere
+  const arcPts = (a0, a1, n) => { const p = []; for(let i=0;i<=n;i++){ const a = a0 + (a1-a0)*i/n; p.push(new T.Vector2(RW*Math.cos(a), RW*Math.sin(a))); } return p; };
+  const winV = arcPts(Math.PI, 0, 90);                  // upper half-disc: left horizon -> zenith -> right horizon (closed by the straight horizon)
+  const seaV = arcPts(Math.PI, 2*Math.PI, 90);          // lower half-disc
+  // sky plate (full disc) + stars (upper half only)
+  const skyPl = new T.Mesh(EXT(new T.Shape(circ(RW-.2,120,false)), 2, .3), MAT.sky); skyPl.position.z = MZ+3.5; moonG.add(skyPl);
+  let seed = 11; const rnd = () => (seed = (seed*16807) % 2147483647) / 2147483647;
+  for(let n=0;n<80;){ const r = 12 + rnd()*90, an = Math.PI*(.015+.97*rnd()), x = r*Math.cos(an), y = r*Math.sin(an); if(y < 5) continue; n++;
+    const d = new T.Mesh(new T.SphereGeometry((n%11===0 ? 2.3 : .8+rnd()*1.2),8,6), MAT.numOn); d.position.set(x, y, MZ+6.2); moonG.add(d); }
+  // cover: full disc with the sky window cut out; the lower half is the SEA, in front of the moon (it sets behind it)
+  const cov = new T.Shape(circ(110,160,false)); cov.holes.push(new T.Path(winV.slice().reverse()));
+  const cover = new T.Mesh(EXT(cov, 2, .3), MAT.dateDisc); cover.position.z = COVZ; moonG.add(cover);
+  const sea = new T.Mesh(EXT(new T.Shape(seaV), .6, .2), MAT.sea); sea.position.z = COVZ + 2.1; moonG.add(sea);
+  [-14,-30,-47,-66,-86].forEach((yy,j) => { const pts = [], xm = Math.sqrt(100*100 - yy*yy);
+    for(let x=-xm; x<=xm; x+=3) pts.push(new T.Vector3(x, yy + 1.5*Math.sin(x*.34 + j*1.7), 0));
+    const w = new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(pts), pts.length*3, .55, 5, false), MAT.goldP); w.position.z = COVZ + 3.2; moonG.add(w); });
+  const hz = []; winV.forEach(p => hz.push(new T.Vector3(p.x, p.y, 0))); for(let i=1;i<60;i++) hz.push(new T.Vector3(RW - 2*RW*i/60, 0, 0));
+  const rim = new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(hz, true, 'catmullrom', .02), 420, 1.5, 6, true), MAT.goldH); rim.position.z = COVZ + 3.4; moonG.add(rim);
+  const bz = new T.Mesh(new T.TorusGeometry(112, 3.6, 10, 140), MAT.steelH); bz.position.z = COVZ + 1; moonG.add(bz);
+  [150,30,205,335].forEach(d => { const a = d*DEG; moonG.add(screw(107*Math.cos(a), 107*Math.sin(a), COVZ+2.4, 2.6, a, MAT.goldP)); });
+  // shadow-box walls: the sky is a painted backdrop deep inside a can (outer face dark, inner face = sky)
+  const wh = COVZ - (MZ+3.5), wz = (COVZ + MZ + 3.5)/2;
+  const wOut = new T.Mesh(new T.CylinderGeometry(106.2,106.2,wh,120,1,true), MAT.dk); wOut.rotation.x = Math.PI/2; wOut.position.z = wz; moonG.add(wOut);
+  const skyIn = MAT.sky.clone(); skyIn.side = T.BackSide;
+  const wIn = new T.Mesh(new T.CylinderGeometry(103.9,103.9,wh,120,1,true), skyIn); wIn.rotation.x = Math.PI/2; wIn.position.z = wz; moonG.add(wIn);
+  // finger: a fixed stud hanging from the cover, standing in the path of the star when the arm points to the nadir
+  const fy = -(RS - 13.75); const stud = cyl(1.4, COVZ-0.3-(MZ+10.5), (COVZ-0.3+MZ+10.5)/2, MAT.goldH, 10); stud.position.set(0, fy, stud.position.z); moonG.add(stud);
+  // hub: shaft of L through the sky plate, domed cap
+  const shaft = cyl(3.4, MZ+11-43, (43+MZ+11)/2, MAT.dsteelP, 20); moonG.add(shaft);
+  const cap = cyl(5.2, 2.6, MZ+12, MAT.goldH, 24); moonG.add(cap); moonG.add(jewel(0,0,MZ+13.4,3,false));
+  // ---- the arm (carried by L) ----
+  armG.add(arm(0,0,0,REND,MZ+7,6,2.4,MAT.dsteelP,true));
+  starG = new T.Group(); starG.position.set(0,RS,0); armG.add(starG);
+  const star = gearMesh({N:57, m:.5, th:2.4, mat:MAT.gR}); star.position.z = MZ+10; starG.add(star);
+  starG.add(cyl(3, MZ0-5.4-(MZ+7+2.4), (MZ0-5.4+MZ+9.4)/2, MAT.steelH, 16));
+  const b1 = bevelMesh(24, .9, 3.6, Math.atan(2), MAT.steelH, 0); b1.position.z = MZ0-5.4; starG.add(b1);
+  const b2g = base(armG, [0,RS+10.8,MZ0], [1,0,0], [0,0,1], [0,-1,0]);
+  moonB2 = bevelMesh(12, .9, 3.6, Math.atan(.5), MAT.steelH, 0); b2g.add(moonB2);
+  const y0 = RS+14.4, y1 = RB+BR+5.5; const rod = new T.Mesh(new T.CylinderGeometry(1.8,1.8,y1-y0,14), MAT.dsteelP); rod.position.set(0,(y0+y1)/2,MZ0); armG.add(rod);
+  const post = cyl(2.8, MZ0+1-(MZ+9.4), (MZ0+1+MZ+9.4)/2, MAT.dk, 16); post.position.y = REND-2; armG.add(post); armG.add(jewel(0,REND-2,MZ0+1.4,2.4,false));
+  const col = cyl(3.6, 5, MZ0, MAT.goldH, 16); col.position.y = y0 + 1; armG.add(col);
+  // ---- the moon ball: half gold, half night blue; spins about the arm axis ----
+  moonBall = new T.Group(); moonBall.position.set(0,RB,MZ0); moonBall.scale.z = MSC; armG.add(moonBall);
   const gl = new T.SphereGeometry(BR,56,36,-Math.PI/2,Math.PI,0,Math.PI); gl.rotateY(-Math.PI/2);
   const gd = new T.SphereGeometry(BR,56,36,Math.PI/2,Math.PI,0,Math.PI); gd.rotateY(-Math.PI/2);
   moonBall.add(new T.Mesh(gl, MAT.moonLit)); moonBall.add(new T.Mesh(gd, MAT.moonDark));
-  [[-.42,.36,3.6],[.38,.18,4.4],[-.1,-.45,3.0],[.45,-.35,2.6],[-.5,-.1,2.4],[.05,.62,2.4]].forEach(([x,y,r]) => {
+  [[-.42,.36,3.2],[.38,.18,4],[-.1,-.45,2.7],[.45,-.35,2.4],[-.5,-.1,2.2],[.05,.62,2.2]].forEach(([x,y,r]) => {
     const zz = -Math.sqrt(1-x*x-y*y), c = new T.Mesh(new T.SphereGeometry(r,14,10), MAT.gR); c.scale.z = .45; c.position.set(x*BR*.98, y*BR*.98, zz*BR*.98); c.lookAt(x*BR*3, y*BR*3, zz*BR*3); moonBall.add(c); });
-  // bridge: collar on the axle -> arm over the bevels -> anchored on the cover (upper half); lower pivot on a post standing on the cover
-  const col = cyl(4.4, 6, MZ0+3, MAT.goldH, 20); col.position.x = 0; col.position.y = -19; moonG.add(col);
-  moonG.add(arm(0,-19,0,52,MZ0+4.5,7,2.4,MAT.dk,true));
-  moonG.add(jewel(0,-19,MZ0+8,3.2)); moonG.add(screw(0,52,MZ0+7,4.2,.5,MAT.goldP));
-  moonG.add(arm(0,BY0b+1,0,-114,MZ0-1.5,6,2.2,MAT.dk,true));
-  const post = cyl(3.6, MZ0-1.5-(MZ+21), (MZ0-1.5+MZ+21)/2, MAT.dk, 16); post.position.y = -114; moonG.add(post);
-  moonG.add(jewel(0,BY0b+1,MZ0+.6,2.6));
-  // fixed sky (window) behind the moons. The window ends are circular LOBES of the moon's own radius, centred where the moon is hidden at new moon:
-  // the moon sliding out from under a lobe shows as a crescent, then a quarter, a gibbous, the full moon... and back.
-  const LOBE = 22.4, TRK = 62, R0W = 36.5, R1W = 106, win = [];
-  for(let i=0;i<=60;i++){ const a = Math.PI + Math.PI*i/60; win.push([R1W*Math.cos(a), R1W*Math.sin(a)]); }          // outer arc, left -> bottom -> right
-  win.push([TRK+LOBE, 0]); for(let i=1;i<=28;i++){ const a = -Math.PI*i/28; win.push([TRK+LOBE*Math.cos(a), LOBE*Math.sin(a)]); }   // right lobe (lower half)
-  win.push([R0W, 0]); for(let i=0;i<=60;i++){ const a = 2*Math.PI - Math.PI*i/60; win.push([R0W*Math.cos(a), R0W*Math.sin(a)]); }       // inner arc, right -> bottom -> left
-  win.push([-(TRK-LOBE), 0]); for(let i=1;i<=28;i++){ const a = -Math.PI*i/28; win.push([-TRK+LOBE*Math.cos(a), LOBE*Math.sin(a)]); }   // left lobe (lower half)
-  const winV = win.map(p => new T.Vector2(p[0], p[1]));
-  const sky = new T.Mesh(EXT(new T.Shape(winV), 2, .3), MAT.sky); sky.position.z = MZ+3.5; moonG.add(sky);
-  let seed = 11; const rnd = () => (seed = (seed*16807) % 2147483647) / 2147483647, ok = (x,y) => y < -3 && Math.hypot(x,y-BY0) > BR+9 && Math.abs(x) > 9 && Math.hypot(x-TRK,y) > LOBE+3 && Math.hypot(x+TRK,y) > LOBE+3;
-  for(let n=0;n<46;){ const r = 41 + rnd()*62, an = Math.PI + Math.PI*(.02+.96*rnd()), x = r*Math.cos(an), y = r*Math.sin(an); if(!ok(x,y)) continue; n++;
-    const d = new T.Mesh(new T.SphereGeometry(.9+rnd()*1.1,8,6), MAT.numOn); d.position.set(x, y, MZ+6); moonG.add(d); }
-  // cover: the whole ring minus the window (so it also hides the moons in the upper half and under the lobes)
-  const ring = new T.Shape(circ(108,160,false)); ring.holes.push(new T.Path(circ(36,120,true))); ring.holes.push(new T.Path(winV.slice().reverse()));
-  const cover = new T.Mesh(EXT(ring, 2, .3), MAT.dateDisc); cover.position.z = MZ+19; moonG.add(cover);
-  const rim = new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(winV.map(p => new T.Vector3(p.x,p.y,0)), true, 'catmullrom', .02), 360, 1.6, 6, true), MAT.goldH); rim.position.z = MZ+20.4; moonG.add(rim);
-  const bz = new T.Mesh(new T.TorusGeometry(111, 3.6, 10, 140), MAT.steelH); bz.position.z = MZ+19.6; moonG.add(bz);
-  const bz2 = new T.Mesh(new T.TorusGeometry(34.5, 1.4, 8, 60), MAT.goldH); bz2.position.z = MZ+19.6; moonG.add(bz2);
-  [20,65,115,160].forEach(d => { const a = d*DEG; moonG.add(screw(72*Math.cos(a), 72*Math.sin(a), MZ+20.2, 4.2, a, MAT.goldP)); });
 }
-{ // finger of B (pin on B's rim, brushing the star at midnight) + bridges of the moon train
-  const loc = Math.atan2(pos.MM[1]-pos.MB[1], pos.MM[0]-pos.MB[0]) - A.MB.phi0;
-  const RPIN2 = 42.4 + 30.5*MSC - 1.5;       // pin radius on B so that it brushes the (scaled) star teeth at midnight
-  objs['MBw'].add(arm(0,0,RPIN2*Math.cos(loc),RPIN2*Math.sin(loc),41,5,2.4,MAT.dk,false));
-  const pin = cyl(3, 10, 45, MAT.goldH, 14); pin.position.set(RPIN2*Math.cos(loc), RPIN2*Math.sin(loc), 45); objs['MBw'].add(pin);
+{ // bridges of the moon train (they dive under the sky plate)
   world.add(arm(0,0,pos.MA[0],pos.MA[1],46,10,2.4,MAT.dk,true));
   world.add(arm(pos.MA[0],pos.MA[1],pos.MB[0],pos.MB[1],46,10,2.4,MAT.dk,true));
   world.add(arm(pos.MB[0],pos.MB[1],pos.MM[0],pos.MM[1],37.2,9,2.4,MAT.dk,true));
-  [pos.MA,pos.MB].forEach(p => world.add(jewel(p[0],p[1],48.4,2.4,true)));
-  world.add(jewel(pos.MM[0],pos.MM[1],MZ+8.6,3.4));
+  world.add(jewel(pos.MA[0],pos.MA[1],48.4,2.4,true));
+  const sh = cyl(2, 10, 41, MAT.dsteelP, 14); sh.position.set(pos.MM[0], pos.MM[1], 41); world.add(sh);
 }
-const moonState = {ck:-1, mA:0, mFrom:0, mTo:0, t0:-1};
-function moonTooth(){
-  const b = new Date(), noon = new Date(b.getFullYear(), b.getMonth(), b.getDate(), 12, 0, 0);
-  const N = noon.getTime()/86400000 + 2440587.5 + (window.__MOOND || 0) - 2451550.1;        // days since the new moon of 6 Jan 2000
-  return (((Math.round(N*59/59.0612)) % 59) + 59) % 59;
+const MOONREF = 2451550.1, SYN = 29.530588853;
+function moonNow(){        // hour angle H of the moon (0 = zenith, + = towards the west) and phase angle psi (0 = new moon)
+  const jd = Date.now()/86400000 + 2440587.5 + (window.__MOOND || 0) + (window.__MOONHR || 0)/24;
+  const psi = TAU*(jd - MOONREF)/SYN, W = TAU*(jd - 2451550.0 + LON/360);
+  return {H: W - psi, psi};
 }
-const moonAngle = k => (270 + (k - 14.75)*(360/59))*DEG;      // full moon (k~15): moon centred in the bottom window; the moon crosses it left to right
+const moonState = {n:null, k:0, sA:0, from:0, to:0, t0:-1};
 const _mbp = new T.Vector3(), _mbv = new T.Vector3(), _mbq = new T.Quaternion();
+const meshPhase = (N1, p1, al, N2) => al + Math.PI + (Math.PI - N1*(p1-al))/N2;       // angle of wheel 2 meshing with wheel 1
 function updateMoon(now){
-  const k = moonTooth(), st = moonState;
-  if(st.ck < 0){ st.ck = k; st.mA = moonAngle(k); }
-  else if(k !== st.ck){ const n = (k - st.ck + 59) % 59; st.mFrom = st.mA; st.mTo = st.mA + n*(360/59)*DEG; st.ck = k; st.t0 = now; }
-  if(st.t0 >= 0){ const t = (now - st.t0)/700; if(t >= 1){ st.mA = st.mTo; st.t0 = -1; } else st.mA = st.mFrom + (st.mTo-st.mFrom)*easeBack(Math.max(0,t)); }
-  skyG.rotation.z = st.mA;
-  const psi = 2*(st.mA - Math.PI);               // 2:1 -> the ball turns once per lunation (0 = new moon, lit side facing away)
-  // the picture is seen from a tilted, off-axis camera: turn the ball by the viewing azimuth so the lit fraction SEEN is the true one
-  moonG.updateWorldMatrix(true, false); moonBall.getWorldPosition(_mbp); _mbv.copy(camera.position).sub(_mbp);
-  moonG.getWorldQuaternion(_mbq).invert(); _mbv.applyQuaternion(_mbq);
-  const phi = Math.atan2(_mbv.x, _mbv.z);
-  moonBall.rotation.y = phi - psi; moonB2.rotation.z = -psi;
+  const m = moonNow(), st = moonState, alpha = -m.H;
+  armG.rotation.z = alpha;                                            // arm: L turns once per lunar day
+  // hidden train: L (59) <- idler (19) <- D (57), meshed
+  const alIL = Math.atan2(pos.MM[1]-pos.MI[1], pos.MM[0]-pos.MI[0]), alDI = Math.atan2(pos.MI[1]-pos.MB[1], pos.MI[0]-pos.MB[0]);
+  const phI = alIL + (Math.PI - 59*(alpha-alIL-Math.PI))/19, phD = alDI + (Math.PI - 19*(phI-alDI-Math.PI))/57;
+  objs['Lw'].rotation.z = alpha; objs['Iw'].rotation.z = phI; objs['Dw'].rotation.z = phD;
+  // the finger acts when the arm passes the nadir (H = pi): one tooth of the star, i.e. 1/28.5 of a turn of the ball
+  const n = Math.floor((m.H - Math.PI)/TAU), target = Math.round(m.psi*57/(2*TAU));
+  if(st.n === null){ st.n = n; st.k = target; st.sA = TAU*target/57; }
+  else if(n !== st.n){ st.n = n; if(target !== st.k){ st.from = st.sA; st.to = TAU*target/57; st.k = target; st.t0 = now; } }
+  if(st.t0 >= 0){ const t = (now - st.t0)/700; if(t >= 1){ st.sA = st.to; st.t0 = -1; } else st.sA = st.from + (st.to-st.from)*easeBack(Math.max(0,t)); }
+  const psiB = 2*st.sA;                                               // 2:1 bevel pair
+  starG.rotation.z = st.sA; moonB2.rotation.z = psiB;
+  // the camera is tilted and off-axis: turn the ball by the viewing azimuth so that the lit fraction SEEN is the true one
+  armG.updateWorldMatrix(true, false); moonBall.getWorldPosition(_mbp); _mbv.copy(camera.position).sub(_mbp);
+  armG.getWorldQuaternion(_mbq).invert(); _mbv.applyQuaternion(_mbq);
+  moonBall.rotation.y = Math.atan2(_mbv.x, _mbv.z) - psiB;
 }
 /* ---------- JOUR DE LA SEMAINE rétrograde (croissant entre 3 h et 5 h; l'arc épouse la courbure du cadran) ----------
    W24 (24 h) has a 2nd pin -> day lever -> 7-tooth star -> 7-step SNAIL. A feeler lever rides the snail; its rack sector turns the pinion of the hand.
